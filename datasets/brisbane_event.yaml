@@ -1,0 +1,45 @@
+---
+# Configuration file for the Brisbane-Event-VPR dataset
+dataset:
+  name: brisbane_event
+  version: "1.0.0"
+  description: "Event-based Visual Place Recognition dataset from Brisbane, Australia, captured with a DAVIS346 camera in different lighting conditions"
+  base_url: "https://zenodo.org/records/4302805"
+  camera: "davis346"
+  resolution: [346, 260]  # Width, Height
+
+# Sequence definitions with individual download links for data, ground truth, and hot pixels
+sequences:
+  sunset2:
+    data:
+      url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-22-17-24-21.hdf5?download=true"
+    ground_truth:
+      available: true
+      url: "https://zenodo.org/records/4302805/files/20200422_172431-sunset2_concat.nmea?download=1"
+    hot_pixel:
+      available: true
+      url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-22-17-24-21_hot_pixels.txt?download=true"
+
+  sunrise:
+    data:
+      url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-29-06-20-23.hdf5?download=true"
+    ground_truth:
+      available: true
+      url: "https://zenodo.org/records/4302805/files/20200429_061912-sunrise_concat.nmea?download=1"
+    hot_pixel:
+      available: true
+      url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-29-06-20-23_hot_pixels.txt?download=true"
+
+# Formatting information for the dataset
+format:
+  data: 
+    format: "hdf5"  # Data format for the sequences
+    timestamp_val: "ns"
+  ground_truth: "nmea"  # Format for ground truth data
+  hot_pixel: "txt"  # Format for hot pixel data
+
+# Other dataset configurations
+other:
+  offset:
+    sunset2: 1587540271.65
+    sunrise: 1588105232.91

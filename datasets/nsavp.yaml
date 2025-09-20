@@ -1,0 +1,39 @@
+---
+# Configuration file for the NYC-Event-VPR dataset
+dataset:
+  name: nsavp
+  version: "1.0.0"
+  description: "Event-based Visual Place Recognition dataset from multiple traverses with a car in different conditions"
+  base_url: "https://umautobots.github.io/nsavp"
+  camera: "DVXplorer"
+  resolution: [640, 480]  # Width, Height
+
+# Sequence definitions with individual download links for data, ground truth, and hot pixels
+sequences:
+  R0_FA0:
+    data:
+      url: "https://deepblue.lib.umich.edu/data/downloads/7m01bm508"
+    ground_truth:
+      available: true
+      url: "https://deepblue.lib.umich.edu/data/downloads/b2773w665"
+    hot_pixel:
+      available: false
+      url: ""
+  
+  R0_FS0:
+    data:
+      url: "https://deepblue.lib.umich.edu/data/downloads/m900nv28c"
+    ground_truth:
+      available: true
+      url: "https://deepblue.lib.umich.edu/data/downloads/g158bj163"
+    hot_pixel:
+      available: false
+      url: ""
+    
+  
+# Formatting information for the dataset
+format:
+  data: 
+    format: "hdf5"  # Data format for the sequences
+  ground_truth: "hdf5"  # Format for ground truth data
+  hot_pixel: ""  # Format for hot pixel data

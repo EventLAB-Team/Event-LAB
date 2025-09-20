@@ -1,0 +1,4 @@
+---
+# Configuration for the sparse event vpr baseline
+gt_tolerance: 2
+netvlad_path: "./baselines/pytorch-NetVlad" # Path to the pretrained NetVLAD model

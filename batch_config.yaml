@@ -1,0 +1,23 @@
+# Batch experiment parameters
+batch_experiments:
+  - dataset: brisbane_event
+    reference: sunset2
+    queries: [sunrise]
+    baselines: [sparse_event, lens, eventvlad]
+    config:
+      frame_generator: frames
+      frame_accumulator: polarity
+      timewindows:
+        list: [33, 66, 120, 250]
+
+  - dataset: brisbane_event
+    reference: sunset2
+    queries: [sunrise]
+    baselines: [vprmethods, ensemble]
+    config:
+      frame_generator: reconstruction
+      timewindows:
+        list: [33, 66, 120, 250]
+    baseline_config:
+      vprmethods:
+        method: ["cosplace", "eigenplaces", "mixvpr"]

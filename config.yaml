@@ -1,0 +1,47 @@
+# General configuration for Event-Lab
+
+data_path: "./datasets" # Path to the datasets directory
+output_path: "./output" # Path to save outputs (results, logs, etc.)
+std_format: "hdf5" # Default format for datasets
+max_frames:       # Maximum frames to generate (null = all)
+chunk_size: 100000  # Events to process at once (memory efficiency)
+ground_truth_name: "ground_truth" # Path to ground truth files
+
+# Processing options
+compression: "lzf"
+num_workers: 4
+max_memory_gb: 8
+keep_original: true # Keep the original downloaded files prior to .hdf5 conversion
+request_input: false # Request input from the user for dataset download
+gps_tolerance: 10 # Tolerance to build the pseudo ground truth (in no. places)
+gps_tolerance_sec: 0.0
+ground_truth_tolerance: 5 # Number of places to build the pseudo-ground truth tolerance at a default of 1000 ms (in # of places)
+filter_places_sec: 1.0 # Filter places to be at least this far apart in time (in seconds)
+
+# Frame reconstruction parameters
+timewindows: [100] # Int value in msec
+num_events: [100000] # Max events per frame, only used if frame_generator is "event_count"
+frame_generator: "frames" # Options: "frames" "reconstruction"
+frame_accumulator: "eventcount"    # Options: "eventcount", "polarity"
+reconstruction_model: "e2vid"  # Options: "firenet", "e2vid (default)"
+
+# Available baselines
+VPR-Baselines:
+  - "ensemble"
+  - "eventvlad"
+
+SLAM-Baselines:
+  - "plevio"
+  - "uslam"
+
+# Dataset configuration file to download and pre-process datasets for Event-Lab
+datasets:
+  - name: "brisbane_event"
+    sequences:
+      - "sunset2"
+      - "sunrise"
+
+  - name: "nsavp"
+    sequences:
+      - "R0_FA0"
+      - "R0_FS0"

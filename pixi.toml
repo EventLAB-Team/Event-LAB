@@ -1,0 +1,77 @@
+[project]
+name = "Event-LAB"
+version = "0.0.1"
+description = "Event-based localization methods benchmarking toolkit"
+channels = ["conda-forge", "robostack-noetic"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+
+[tasks]
+eventlab = {cmd = "pixi run python eventlab_run.py"}
+getdata = {cmd = "pixi run python eventlab_data.py"}
+batch = {cmd = "pixi run python generate_batch.py batch_config.yaml config.yaml run_batch.sh && pixi run bash run_batch.sh"}
+demo = {cmd = "pixi run python eventlab_run.py eventvlad brisbane_event sunset2 sunrise"}
+
+[system-requirements]
+cuda = "12"
+
+[dependencies]
+python = "*"
+pyyaml = "*"
+gdown = "*"
+requests = "*"
+faiss = "*"
+"ruamel.yaml" = "*"
+loguru = "*"
+tqdm = "*"
+openpyxl = "*"
+scipy = "*"
+numpy = "<2"
+h5py = "*"
+matplotlib = "*"
+ros-noetic-rosbag = "*"
+ros-noetic-cv-bridge = "*"
+pynmea2 = "*"
+pandas = "*"
+numba = "*"
+tonic = "*"
+prettytable = "*"
+imageio = "*"
+sinabs = "*"
+scikit-image = "*"
+wandb = "*"
+pyarrow = "*"
+fastparquet = "*"
+torchvision = "*"
+
+[target.linux-64.dependencies]
+cuda-version = "12.*"
+pytorch-gpu = "*"
+cuda-cudart-dev = "*"
+cuda-crt = "*"
+cudnn = "*"
+libcusparse-dev = "*"
+cuda-driver-dev = "*"
+cuda-nvcc = "*"
+cuda-nvrtc-dev = "*"
+cuda-nvtx-dev = "*"
+cuda-nvml-dev = "*"
+cuda-profiler-api = "*"
+cusparselt = "*"
+libcublas-dev = "*"
+libcudss-dev = "*"
+libcufile-dev = "*"
+libcufft-dev = "*"
+libcurand-dev = "*"
+libcusolver-dev = "*"
+
+[target.linux-64.pypi-dependencies]
+samna = "*"
+
+[target.osx-arm64.pypi-dependencies]
+samna = "*"
+
+[target.osx-64.pypi-dependencies]
+samna = "*"
+
+[target.osx-64.dependencies]
+numpy = "<2"
