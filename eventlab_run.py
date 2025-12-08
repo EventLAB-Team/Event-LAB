@@ -31,17 +31,16 @@ def main():
             # Check for the existence of a ground truth for the reference and query datasets
             GT_file = (os.path.join(config['data_path'], dataset_name, 'ground_truth', f"{reference_name}_{query_name}_GT.npy"))
             
-            if not os.path.exists(GT_file):
-                # Generate ground truth if it does not exist
-                generate_ground_truth(config, 
-                                    dataset_config, 
-                                    dataset_name, 
-                                    reference_name, 
-                                    query_name, 
-                                    reference_data, 
-                                    query_data,
-                                    timewindow=1000, # Create ground-truth anchored to the 100 msec timewindow
-                                    gps_available=dataset_config['sequences'][f'{reference_name}']['ground_truth']['available'])
+            # Generate ground truth
+            generate_ground_truth(config, 
+                                dataset_config, 
+                                dataset_name, 
+                                reference_name, 
+                                query_name, 
+                                reference_data, 
+                                query_data,
+                                timewindow=1000, # Create ground-truth anchored to the 100 msec timewindow
+                                gps_available=dataset_config['sequences'][f'{reference_name}']['ground_truth']['available'])
 
             # Check for existence of datasets, retrieve if not present
         except IndexError:

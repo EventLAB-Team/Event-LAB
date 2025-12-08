@@ -1,0 +1,107 @@
+---
+# Configuration file for the QCR Event-VPR dataset
+dataset:
+  name: qcr_event
+  version: "1.0.0"
+  description: "Event-based Visual Place Recognition dataset from the QUT Centre for Robotics"
+  base_url: "https://huggingface.co/datasets/AdamHines/QCR-Event-VPR/tree/main"
+  camera: "davis346"
+  resolution: [346, 260]  # Width, Height
+
+# Sequence definitions with individual download links for data, ground truth, and hot pixels
+sequences:
+  normal1:
+    data:
+      url: "https://huggingface.co/datasets/AdamHines/QCR-Event-VPR/resolve/main/2021-08-19-08-25-42.hdf5?download=true"
+    ground_truth:
+      available: false
+      url: ""
+    hot_pixel:
+      available: false
+      url: ""
+
+  normal2:
+    data:
+      url: "https://huggingface.co/datasets/AdamHines/QCR-Event-VPR/resolve/main/2021-08-19-08-28-43.hdf5?download=true"
+    ground_truth:
+      available: False
+      url: ""
+    hot_pixel:
+      available: false
+      url: ""
+
+  normal3:
+    data:
+      url: "https://huggingface.co/datasets/AdamHines/QCR-Event-VPR/resolve/main/2021-08-19-09-45-28.hdf5?download=true"
+    ground_truth:
+      available: False
+      url: ""
+    hot_pixel:
+      available: False
+      url: ""
+
+  fast2:
+    data:
+      url: "https://huggingface.co/datasets/AdamHines/QCR-Event-VPR/resolve/main/2021-08-20-10-19-45.hdf5?download=true"
+    ground_truth:
+      available: False
+      url: ""
+    hot_pixel:
+      available: False
+      url: ""
+
+  normal4:
+    data:
+      url: "https://huggingface.co/datasets/AdamHines/QCR-Event-VPR/resolve/main/2022-03-28-11-51-26.hdf5?download=true"
+    ground_truth:
+      available: False
+      url: ""
+    hot_pixel:
+      available: False
+      url: ""
+
+  fast1:
+    data:
+      url: "https://huggingface.co/datasets/AdamHines/QCR-Event-VPR/resolve/main/2022-03-28-12-01-42.hdf5?download=true"
+    ground_truth:
+      available: False
+      url: ""
+    hot_pixel:
+      available: False
+      url: ""
+
+  slow1:
+    data:
+      url: "https://huggingface.co/datasets/AdamHines/QCR-Event-VPR/resolve/main/2022-03-28-12-03-44.hdf5?download=true"
+    ground_truth:
+      available: False
+      url: ""
+    hot_pixel:
+      available: False
+      url: ""
+
+# Formatting information for the dataset
+format:
+  data: 
+    format: "hdf5"  # Data format for the sequences
+    timestamp_val: "ns"
+  ground_truth: ""  # Format for ground truth data
+  hot_pixel: ""  # Format for hot pixel data
+
+# Other dataset configurations
+other:
+  gt_times:
+    normal1: [0, 6, 13, 31, 58, 77, 101.5, 124, 148, 157.7, 163.0]
+    normal2: [0, 6, 13, 31.5, 58, 76, 100.5, 123, 148.5, 156.5, 162.0]
+    normal3: [0, 6.5, 13.5, 31.5, 58.5, 77.5, 102.5, 126, 150, 158.5, 165.0]
+    normal4: [0, 6.7, 13.2, 31, 57, 74, 97, 119, 141, 148, 154]
+    fast1: [0, 2.9, 5.8, 12.9, 23.5, 32, 41.5, 50, 59.3, 62, 64.5]
+    fast2: [0, 2.5, 5.0, 12.7, 23.7, 33.6, 43.0, 52.4, 62.3, 65.4, 68.0]
+    slow1: [0, 15.5, 30.0, 63.5, 110.0, 141.0, 185.0, 217.0, 246.5, 256.0, 263.0]
+  
+  offset:
+    normal1: 2000000
+    normal3: 2000000
+    normal4: 8000000
+    fast1: 7700000
+    slow1: 12000000

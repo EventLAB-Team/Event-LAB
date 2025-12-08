@@ -1,0 +1,18 @@
+# Baseline directories
+baselines/EventVLAD/
+baselines/VPR_Tutorial/
+baselines/__pycache__/
+baselines/pytorch-NetVlad/
+baselines/vpr_sparse_event/
+
+# Dataset directories
+datasets/__pycache__/
+datasets/brisbane_event/
+datasets/nsavp/
+
+# Output directories
+output/
+
+# Other
+.vscode/
+utils/__pycache__/

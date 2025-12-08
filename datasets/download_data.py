@@ -44,7 +44,17 @@ def download_sequence_data(config, data_config, dataset_name, sequence_name):
                 headers['Range'] = f'bytes={resume_pos}-'
             
             # Make the actual HTTP GET request
-            http_response = requests.get(sequence_url, headers=headers, stream=True, timeout=30)
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/537.36"
+                ),
+                "Referer": "https://deepblue.lib.umich.edu/",
+                "Accept": "*/*",
+            }
+
+            http_response = requests.get(sequence_url, headers=headers, stream=True)
             http_response.raise_for_status()
             
             # Open file in appropriate mode

@@ -36,7 +36,7 @@ class eventvlad_baseline(EventBaseline):
         if not os.path.exists(self.baseline_config['netvlad_path']):
             netvlad_url = "https://github.com/Nanne/pytorch-NetVlad.git"
             clone_repo(netvlad_url, destination=self.baseline_config['netvlad_path'])
-        if not os.path.exists(os.path.join(self.baseline_config['netvlad_path'], 'vgg16_eventvlad.tar')):
+        if not os.path.exists('./baselines/EventVLAD/vgg16_eventvlad.tar'):
             print("Downloading the eventvlad weights...")
             # Get the eventvlad weights
             file_id = "1rSIhH1pk8ADxfqYQXoos_hTuWyfiWSu3"

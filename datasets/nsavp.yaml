@@ -29,7 +29,46 @@ sequences:
     hot_pixel:
       available: false
       url: ""
+
+  R0_FN0:
+    data:
+      url: "https://deepblue.lib.umich.edu/data/downloads/zs25x9327"
+    ground_truth:
+      available: true
+      url: "https://deepblue.lib.umich.edu/data/downloads/nc580n484"
+    hot_pixel:
+      available: false
+      url: ""
     
+  R0_RA0:
+    data:
+      url: "https://deepblue.lib.umich.edu/data/downloads/d504rm081"
+    ground_truth:
+      available: true
+      url: "https://deepblue.lib.umich.edu/data/downloads/9k41zf27z"
+    hot_pixel:
+      available: false
+      url: ""
+
+  R0_RN0:
+    data:
+      url: "https://deepblue.lib.umich.edu/data/downloads/zp38wd338"
+    ground_truth:
+      available: true
+      url: "https://deepblue.lib.umich.edu/data/downloads/x059c818p"
+    hot_pixel:
+      available: false
+      url: ""
+
+  R0_RS0:
+    data:
+      url: "https://deepblue.lib.umich.edu/data/downloads/6m311q215"
+    ground_truth:
+      available: true
+      url: "https://deepblue.lib.umich.edu/data/downloads/wd375x08n"
+    hot_pixel:
+      available: false
+      url: ""
   
 # Formatting information for the dataset
 format:
