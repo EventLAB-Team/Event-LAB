@@ -1,13 +1,17 @@
 # Event-LAB: Towards Standardized Evaluation of Neuromorphic Localization Methods
 
-<div style="display:flex; align-items:center; gap:24px;">
-  <img src="./assets/logo.gif" alt="Event-LAB logo" width="220" />
-  <div>
-    <p><strong>Event-LAB</strong> is a framework for <strong>easy, reliable evaluation of event-based localization methods</strong> across standardized datasets and pipelines.</p>
-    <p>Using <strong>single command-line invocation</strong>, multiple different event-based methods can be implemented. See the <a href="">Event-LAB documentation</a> for further details.</p>
-    <p>If you use this code in your work, please <strong>cite our paper</strong> (see <a href="#license-and-citation">License &amp; Citation</a>) and consider giving the repo a star! :star:</p>
-  </div>
-</div>
+<table>
+  <tr>
+    <td width="240" align="center">
+      <img src="./assets/logo.gif" alt="Event-LAB logo" width="220" />
+    </td>
+    <td>
+      <p><strong>Event-LAB</strong> is a framework for <strong>easy, reliable evaluation of event-based localization methods</strong> across standardized datasets and pipelines.</p>
+      <p>Using <strong>single command-line invocation</strong>, multiple different event-based methods can be implemented. See the <a href="">Event-LAB documentation</a> for further details.</p>
+      <p>If you use this code in your work, please <strong>cite our paper</strong> (see <a href="#license-and-citation">License &amp; Citation</a>) and consider giving the repo a star! ⭐</p>
+    </td>
+  </tr>
+</table>
 
 <br>
 
