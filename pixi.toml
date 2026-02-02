@@ -14,6 +14,9 @@ demo = {cmd = "pixi run python eventlab_run.py eventvlad brisbane_event sunset2 
 [system-requirements]
 cuda = "12"
 
+[environments]
+e2vid = {features = ["e2vid"], no-default-feature = true}
+
 [dependencies]
 python = "*"
 pyyaml = "*"
@@ -75,3 +78,40 @@ samna = "*"
 
 [target.osx-64.dependencies]
 numpy = "<2"
+
+[feature.e2vid]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+system-requirements = {cuda = "12"}
+
+[feature.e2vid.dependencies]
+python = "<=3.11"
+numpy = ">=1.6.0,<1.20"
+pandas = "*"
+opencv = "*"
+scipy = "*"
+pyyaml = "*"
+h5py = "*"
+requests = "*"
+tqdm = "*"
+matplotlib = "*"
+pillow = "*"
+cuda-version = "12.*"
+pytorch-gpu = "*"
+cuda-cudart-dev = "*"
+cuda-crt = "*"
+cudnn = "*"
+libcusparse-dev = "*"
+cuda-driver-dev = "*"
+cuda-nvcc = "*"
+cuda-nvrtc-dev = "*"
+cuda-nvtx-dev = "*"
+cuda-nvml-dev = "*"
+cuda-profiler-api = "*"
+cusparselt = "*"
+libcublas-dev = "*"
+libcudss-dev = "*"
+libcufile-dev = "*"
+libcufft-dev = "*"
+libcurand-dev = "*"
+libcusolver-dev = "*"

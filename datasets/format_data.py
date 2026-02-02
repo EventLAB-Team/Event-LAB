@@ -1930,7 +1930,7 @@ class E2VIDReconstructor:
                 f'--color '
                 f'--hot_pixels_file {self.hot_pixels_file}'
             )
-        construct_cmd = ["pixi", "run", "bash", "-c", command]
+        construct_cmd = ["pixi", "run", "-e", "e2vid", "bash", "-c", command]
         print("Running E2VID reconstruction...")
         subprocess.run(construct_cmd, text=True)
         self.output_dir = output_dir

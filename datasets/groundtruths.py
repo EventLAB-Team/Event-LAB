@@ -55,12 +55,13 @@ def _to_seconds(values) -> np.ndarray:
     v = np.asarray(values)
 
     if np.issubdtype(v.dtype, np.datetime64):
-        t_s = (v.astype("datetime64[ns]").astype("int64").astype(np.float64)) * 1e-9
+        t_s = (v.astype("datetime64[ns]").astype("int64").astype(np.float64)) * 1e-6
     else:
         v = v.astype(np.float64)
         median_val = np.nanmedian(v)
 
         # Very large -> likely ns/us/ms; otherwise treat as seconds (epoch or relative)
+        # print which one it uses
         if median_val > 1e14:      # nanoseconds
             t_s = v / 1e9
         elif median_val > 1e11:    # microseconds
@@ -836,7 +837,10 @@ def generate_ground_truth(config,
         # Convert ticks -> seconds, relative to start
         ref_frame_times_s = (ref_ticks - ref_ticks[0]) * 1e-9
         qry_frame_times_s = (qry_ticks - qry_ticks[0]) * 1e-9
-
+    else:
+        ref_frame_times_s = None
+        qry_frame_times_s = None
+        
     # Pose-only fast path (default)
     if fast and gps_available:
         return ground_truth_from_pose_only(

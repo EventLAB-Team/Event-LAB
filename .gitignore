@@ -4,11 +4,17 @@ baselines/VPR_Tutorial/
 baselines/__pycache__/
 baselines/pytorch-NetVlad/
 baselines/vpr_sparse_event/
+baselines/LENS/
+baselines/ensemble/
+baselines/vprmethods/
 
 # Dataset directories
 datasets/__pycache__/
 datasets/brisbane_event/
 datasets/nsavp/
+datasets/fast_slow/
+datasets/qcr_event/
+datasets/rpg_e2vid/
 
 # Output directories
 output/

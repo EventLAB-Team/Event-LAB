@@ -1,4 +1,6 @@
-import os, yaml, h5py, requests
+import os, yaml, h5py, requests, time
+
+from tqdm import tqdm
 
 import numpy as np
 from datasets.format_data import format_sequence_data, build_event_frames
@@ -94,18 +96,129 @@ class EventDataset():
                                             self.timewindow_list[idx], 
                                             self.reconstruction_types[idx], 
                                             recon=self.config['frame_generator'])
+                    
+        def check_download_size(sequence_url):
+            try:
+                response = requests.head(sequence_url, allow_redirects=True, timeout=30)
+                response.raise_for_status()
+                
+                # Get the Content-Length header
+                size_header = response.headers.get('Content-Length')
+                if size_header:
+                    return int(size_header)
+                else:
+                    print("Warning: Server did not provide file size")
+                    return None
+                
+            except requests.RequestException as e:
+                print(f"Error checking file size: {e}")
+                return None
 
         # download the ground truth, if available
-        if not os.path.exists(os.path.join(self.dataset_path, f"{self.sequence_name}_ground_truth.{self.data_config['format']['ground_truth']}")):
-            if self.data_config['sequences'][self.sequence_name]['ground_truth']['available']:
-                gt_url = self.data_config['sequences'][self.sequence_name]['ground_truth']['url']
-                print(f"Downloading ground truth from {gt_url}")
-                response = requests.get(gt_url)
-                response.raise_for_status()
-                gt_file = os.path.join(self.dataset_path, f"{self.sequence_name}_ground_truth.{self.data_config['format']['ground_truth']}")
-                with open(gt_file, 'wb') as f:
-                    f.write(response.content)
-                print(f"✓ Ground truth downloaded: {gt_file}")
+        gt_ext = self.data_config['format']['ground_truth']
+        gt_file = os.path.join(self.dataset_path,
+                            f"{self.sequence_name}_ground_truth.{gt_ext}")
+
+        if (not os.path.exists(gt_file)
+            and self.data_config['sequences'][self.sequence_name]['ground_truth']['available']):
+
+            gt_url = self.data_config['sequences'][self.sequence_name]['ground_truth']['url']
+            print(f"Downloading ground truth from {gt_url}")
+
+            # --- size and optional user confirmation (mirrors download_sequence_data) ---
+            size = check_download_size(gt_url)
+            request_input = getattr(self, "request_input", False)
+
+            if request_input and size is not None:
+                gb = size / (1024 * 1024 * 1024)
+                resp = input(
+                    f"Download the ground truth ({gb:.2f}GB)? "
+                    "(yes / press Enter to confirm): "
+                ).strip().lower()
+                if resp not in ("", "yes"):
+                    raise Exception("Ground truth download cancelled by user.")
+
+            max_retries = 5
+
+            for attempt in range(max_retries):
+                try:
+                    # --- resume logic ---
+                    resume_pos = 0
+                    if os.path.exists(gt_file):
+                        resume_pos = os.path.getsize(gt_file)
+                        if size is not None and resume_pos == size:
+                            print(f"Ground truth already completely downloaded: {gt_file}")
+                            break
+                        elif resume_pos > 0:
+                            print(
+                                f"Resuming ground truth download from "
+                                f"{resume_pos / (1024*1024):.1f}MB"
+                            )
+
+                    # --- headers (this is what fixes DeepBlue being grumpy) ---
+                    headers = {
+                        "User-Agent": (
+                            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                            "AppleWebKit/537.36 (KHTML, like Gecko) "
+                            "Chrome/120.0.0.0 Safari/537.36"
+                        ),
+                        "Referer": "https://deepblue.lib.umich.edu/",
+                        "Accept": "*/*",
+                    }
+                    if resume_pos > 0:
+                        headers["Range"] = f"bytes={resume_pos}-"
+
+                    # --- streaming download with tqdm ---
+                    http_response = requests.get(gt_url, headers=headers, stream=True)
+                    http_response.raise_for_status()
+
+                    mode = "ab" if resume_pos > 0 else "wb"
+                    total = size if size is not None else None
+
+                    with open(gt_file, mode) as f, tqdm(
+                        desc=f"Download ground truth = {self.sequence_name}",
+                        total=total,
+                        initial=resume_pos,
+                        unit="B",
+                        unit_scale=True,
+                        unit_divisor=1024,
+                    ) as pbar:
+                        for chunk in http_response.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                if total is not None:
+                                    pbar.update(len(chunk))
+
+                    print(f"✓ Ground truth downloaded: {gt_file}")
+                    break  # success
+
+                except (requests.exceptions.RequestException,
+                        requests.exceptions.ChunkedEncodingError,
+                        requests.exceptions.ConnectionError) as e:
+                    print(f"Ground truth download failed on attempt {attempt + 1}: {e}")
+
+                    if attempt < max_retries - 1:
+                        wait_time = 2 ** attempt
+                        print(f"Retrying in {wait_time} seconds...")
+                        time.sleep(wait_time)
+                    else:
+                        print(f"Download failed after {max_retries} attempts")
+                        if os.path.exists(gt_file):
+                            current_size = os.path.getsize(gt_file)
+                            print(
+                                f"Partial file size: {current_size / (1024*1024):.1f}MB"
+                            )
+                            print("You can retry the download to resume from this point")
+                        raise
+
+                except KeyboardInterrupt:
+                    print("\nGround truth download interrupted by user.")
+                    if os.path.exists(gt_file):
+                        current_size = os.path.getsize(gt_file)
+                        print(
+                            f"Partial file saved: {current_size / (1024*1024):.1f}MB"
+                        )
+                    raise
 
     def _time_scale_from_config(self):
         """

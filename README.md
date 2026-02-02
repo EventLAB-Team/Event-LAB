@@ -1,7 +1,21 @@
 # Event-LAB: Towards Standardized Evaluation of Neuromorphic Localization Methods
-This repository contains a _demonstration version_ of the code for Event-LAB, a framework for performing easy and reliable localization methods using event-based localization methods and datasets. As this work is currently under review, the full and final code will be released upon acceptance.
 
-In the demonstration version, we provide two localization methods and datasets. Details of which are below.
+<div style="display:flex; align-items:center; gap:24px;">
+  <img src="./assets/logo.gif" alt="Event-LAB logo" width="220" />
+  <div>
+    <p><strong>Event-LAB</strong> is a framework for <strong>easy, reliable evaluation of event-based localization methods</strong> across standardized datasets and pipelines.</p>
+    <p>Using <strong>single command-line invocation</strong>, multiple different event-based methods can be implemented. See the <a href="">Event-LAB documentation</a> for further details.</p>
+    <p>If you use this code in your work, please <strong>cite our paper</strong> (see <a href="#license-and-citation">License &amp; Citation</a>) and consider giving the repo a star! :star:</p>
+  </div>
+</div>
+
+<br>
+
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+[![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
+[![QUT Centre for Robotics](https://img.shields.io/badge/collection-QUT%20Robotics-%23043d71?style=flat-square)](https://qcr.ai)
+[![stars](https://img.shields.io/github/stars/EventLAB-Team/Event-LAB.svg?style=flat-square)](https://github.com/EventLAB-Team/Event-LAB/stargazers)
+[![GitHub repo size](https://img.shields.io/github/repo-size/EventLAB-Team/Event-LAB.svg?style=flat-square)](./README.md)
 
 ## Quick start :dizzy:
 Event-LAB uses [Pixi](https://prefix.dev/docs/pixi/overview) by prefix.dev to manage packages and dependencies to achieve bit-for-bit reproducibility. Follow the instructions below to get started with Event-LAB.
@@ -84,13 +98,33 @@ For the demonstration version of the repository, we have implemented two baselin
 |:----------------|:------|:------------:|
 | EventVLAD |  https://github.com/alexjunholee/EventVLAD | eventvlad|
 |Ensemble-Event-VPR | https://github.com/Tobias-Fischer/ensemble-event-vpr | ensemble |
+|LENS | | lens |
+|Sparse-Event-VPR | | sparse_event |
+VPR-Methods | | vprmethods |
 
 | Datasets | Link | Invocation | Traverses | 
 |:----------------|:------|:------------|:-------:|
 | Brisbane-Event-VPR |  https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr | brisbane_event | sunset1, sunset2, sunrise, daytime, morning, night
 |NSAVP | https://umautobots.github.io/nsavp | nsavp | R0_RN0, R0_RA0, R0_FS0, F0_FN0, RO_RS0, R1_DA0, R1_FA0, R1_RA0, R0_FA0 |
+|Fast-and-Slow | | fast_slow | r_low1, r_med1, r_high1, q_low1, q_med1, q_high1 |
+|QCR-Event-VPR | | qcr_event | normal1, normal2, normal3, normal4, fast1, fast2, slow1 |
 
 Any combination of implemented baseline methods, datasets and their traverses can be set-up for a reference/query pair to evaluate performance.
+
+## License and citation
+This repository is licensed under the permissive [MIT License](./LICENSE). If you use our code, please cite our [paper](https://arxiv.org/abs/2509.14516):
+
+```
+@inproceedings{HinesEventLAB2026,
+      title={Event-LAB: Towards Standardized Evaluation of Neuromorphic Localization Methods}, 
+      author={Adam D. Hines and Alejandro Fontan and Michael Milford and Tobias Fischer},
+      year={2026},
+      pages={},
+      booktitle={IEEE International Conference on Robotics and Automation}     
+}
+```
+
+Where using baselines or datasets from other authors in your evaluation as implemented in our code, please ensure you additionally cite the correct source material. 
 
 ## Issues, bugs, and feature requests
 If you encounter problems whilst running the code or if you have a suggestion for a feature or improvement, please report it as an [issue](https://github.com/EventLAB-Team/Event-LAB/issues).

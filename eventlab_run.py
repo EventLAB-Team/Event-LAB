@@ -1,10 +1,13 @@
 import os, sys, yaml
 
+from utils import utils
 from baselines.get_baseline import get_baseline 
 from datasets.get_data import get_dataset
 from datasets.groundtruths import generate_ground_truth
 
 def main():
+    # Start the Event-LAB banner
+    utils.start()
     # Load the main configuration file
     with open('config.yaml', 'r') as file:
         config = yaml.safe_load(file)
@@ -24,10 +27,16 @@ def main():
             reference_name = sys.argv[3]
             query_name = sys.argv[4]
 
+            # Print experimental details
+            print(f"Running VPR baseline: {baseline_name}")
+            print(f"Dataset: {dataset_name}")
+            print(f"Reference sequence: {reference_name}")
+            print(f"Query sequence: {query_name}")
+            print('')
+
             # Load general config and set the dataset (will download, format, and construct data if not present)
             reference_data = get_dataset(config, dataset_name, reference_name)
             query_data = get_dataset(config, dataset_name, query_name)
-
             # Check for the existence of a ground truth for the reference and query datasets
             GT_file = (os.path.join(config['data_path'], dataset_name, 'ground_truth', f"{reference_name}_{query_name}_GT.npy"))
             
@@ -39,7 +48,7 @@ def main():
                                 query_name, 
                                 reference_data, 
                                 query_data,
-                                timewindow=1000, # Create ground-truth anchored to the 100 msec timewindow
+                                timewindow=reference_data.timewindow_list[0], # Create ground-truth anchored to the 100 msec timewindow
                                 gps_available=dataset_config['sequences'][f'{reference_name}']['ground_truth']['available'])
 
             # Check for existence of datasets, retrieve if not present

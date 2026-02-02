@@ -151,7 +151,8 @@ class LENS_baseline(EventBaseline):
             f"--train_model "
             f"--models_dir {self.repo_path}/lens/models/ "
             f"--output_dir {self.output_dir} "
-            f"--output_subfolder"
+            f"--output_subfolder "
+            f"--nocuda"
         )
     
         # Wrap it with pixi run
@@ -175,7 +176,9 @@ class LENS_baseline(EventBaseline):
             f"--sequence_length {self.lens_config['sequence_length']} "
             f"--timebin {self.lens_config['timebin']} "
             f"--GT_tolerance {0} "
-            f"--output_subfolder"
+            f"--output_subfolder "
+            f"--gt_dir {config['data_path']}/{data_config['dataset']['name']}/ground_truth "
+            f"--nocuda"
         )
         
         # Wrap it with pixi run

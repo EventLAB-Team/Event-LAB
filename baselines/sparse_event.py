@@ -28,11 +28,16 @@ class sparse_event_baseline(EventBaseline):
 
     def format_data(self, config, dataset_config, reference, query, timewindow):
         """
-        Format the reference and query data for the baseline.
+        Format the reference and query data for the baseline, using chunked
+        loading so we never load all frames at once just to compute saliency.
         """
-        self.config=config
-        from baselines.vpr_sparse_event.src.sparse_event_vpr.sparse_pixel_utils import adjust_and_normalize_probabilities, get_random_pixels
+        self.config = config
+        from baselines.vpr_sparse_event.src.sparse_event_vpr.sparse_pixel_utils import (
+            adjust_and_normalize_probabilities,
+            get_random_pixels,
+        )
         from baselines.vpr_sparse_event.src.sparse_event_vpr.utils import remove_random_bursts
+
         # Get experimental details
         ref_info = reference.get_dataset_info()
         query_info = query.get_dataset_info()
@@ -65,9 +70,9 @@ class sparse_event_baseline(EventBaseline):
         # usage
         ref_files   = list_frame_files(self.ref_directory)
         query_files = list_frame_files(self.query_directory)
-        # after you have ref_files, query_files and min_gap_sec
-        min_gap_sec = float(config.get("filter_places_sec", 60))
 
+        # Apply temporal filtering
+        min_gap_sec = float(config.get("filter_places_sec", 60))
         ref_res   = FUNC._apply_time_filter_to_files(ref_files,   self.ref_directory,  min_gap_sec, debug=False)
         query_res = FUNC._apply_time_filter_to_files(query_files, self.query_directory, min_gap_sec, debug=False)
 
@@ -83,50 +88,149 @@ class sparse_event_baseline(EventBaseline):
         self.ref_kept_idx   = ref_res['kept_idx']
         self.query_kept_idx = query_res['kept_idx']
 
-        # proceed to load arrays
-        self.reference_data = np.array([np.load(p) for p in ref_files])
-        self.query_data     = np.array([np.load(p) for p in query_files])
-        
-        # if config uses frames with polarity, sum the two polarities over the list of arrays
-        if config['frame_generator'] == 'frames' and (config['frame_accumulator'] == 'eventcount' or config['frame_accumulator'] == 'polarity'):
-            self.reference_data = [arr.sum(axis=2) for arr in self.reference_data]
-            self.query_data     = [arr.sum(axis=2) for arr in self.query_data]
-            self.reference_data = np.array(self.reference_data)
-            self.query_data     = np.array(self.query_data)
+        # ----------------------------
+        # Helper: load one frame as [H, W] (collapse polarity if needed)
+        # ----------------------------
+        def load_single_frame(path: Path) -> np.ndarray:
+            arr = np.load(path)
+            # collapse polarity channels if configured that way
+            if (
+                config['frame_generator'] == 'frames'
+                and config['frame_accumulator'] in ('eventcount', 'polarity')
+            ):
+                # original code did arr.sum(axis=2) for (H, W, 2)
+                if arr.ndim == 3:
+                    arr = arr.sum(axis=2)
+            return arr.astype(np.float32, copy=False)
 
-        print(self.reference_data.shape, self.query_data.shape)
-        # Remove random bursts from the data
-        self.reference_data_noburst = remove_random_bursts(self.reference_data, threshold=10)
-        self.query_data_noburst = remove_random_bursts(self.query_data, threshold=10)
+        # ------------------------------------------------------------------
+        # Pass 1: chunked over reference frames to compute reference_event_means
+        # ------------------------------------------------------------------
+        chunk_size = int(config.get("frames_chunk_size", 1000))
 
-        # Get the mean and variance of reference and query data
-        self.reference_event_means = self.reference_data_noburst.mean(axis=0)
+        ref_sum = None
+        ref_count = 0
+        H = W = None
 
-        # Get the proababilities for the reference data
+        for start in range(0, len(ref_files), chunk_size):
+            end = min(start + chunk_size, len(ref_files))
+            batch_paths = ref_files[start:end]
+
+            # load batch -> (B, H, W)
+            batch = [load_single_frame(p) for p in batch_paths]
+            if len(batch) == 0:
+                continue
+            batch = np.stack(batch, axis=0)  # (B, H, W)
+
+            # Remove random bursts for this chunk
+            batch_noburst = remove_random_bursts(batch, threshold=10).astype(np.float32, copy=False)
+
+            if ref_sum is None:
+                H, W = batch_noburst.shape[1:]
+                ref_sum = batch_noburst.sum(axis=0, dtype=np.float64)
+            else:
+                ref_sum += batch_noburst.sum(axis=0, dtype=np.float64)
+
+            ref_count += batch_noburst.shape[0]
+
+        if ref_count == 0:
+            raise ValueError("No reference frames left after filtering; check your config / time filter.")
+
+        # mean over all (burst-filtered) reference frames, used for saliency
+        self.reference_event_means = (ref_sum / float(ref_count)).astype(np.float32)
+
+        # ------------------------------------------------------------------
+        # Compute probabilities and sample sparse pixels from the full mean
+        # ------------------------------------------------------------------
         if self.baseline_config['use_saliency']:
             prob_to_draw_from = adjust_and_normalize_probabilities(self.reference_event_means)
         else:
             prob_to_draw_from = None
-        random_pixels = np.array(get_random_pixels(self.baseline_config['num_target_pixels'], 
-                                                   im_width=dataset_config["dataset"]["resolution"][0], 
-                                                   im_height=dataset_config["dataset"]["resolution"][1], 
-                                                   local_suppression_radius=7, 
-                                                   prob_to_draw_from=prob_to_draw_from))
 
-        # Apply sparse pixel sampling
-        x_coords = random_pixels[:, 1]
+        # NOTE: dataset_config should match actual (W, H), but we trust the data shape we saw.
+        im_width  = dataset_config["dataset"]["resolution"][0]
+        im_height = dataset_config["dataset"]["resolution"][1]
+        if im_width != W or im_height != H:
+            # Trust the actual data, override silently
+            im_width, im_height = W, H
+
+        random_pixels = np.array(
+            get_random_pixels(
+                self.baseline_config['num_target_pixels'],
+                im_width=im_width,
+                im_height=im_height,
+                local_suppression_radius=7,
+                prob_to_draw_from=prob_to_draw_from,
+            )
+        )
+
+        # y, x for indexing
         y_coords = random_pixels[:, 0]
-        self.sparse_reference_data = self.reference_data[:, y_coords, x_coords]
-        self.sparse_query_data = self.query_data[:, y_coords, x_coords]
+        x_coords = random_pixels[:, 1]
+        num_pixels = random_pixels.shape[0]
 
-        # Create sparse_event dict
+        # ------------------------------------------------------------------
+        # Pass 2: re-load ref & query in chunks, build full *_noburst and sparse arrays
+        # ------------------------------------------------------------------
+        num_ref = len(ref_files)
+        num_qry = len(query_files)
+
+        # Allocate final arrays
+        self.reference_data_noburst = np.empty((num_ref, H, W), dtype=np.float32)
+        self.query_data_noburst     = np.empty((num_qry, H, W), dtype=np.float32)
+        self.sparse_reference_data  = np.empty((num_ref, num_pixels), dtype=np.float32)
+        self.sparse_query_data      = np.empty((num_qry, num_pixels), dtype=np.float32)
+
+        # Fill reference arrays
+        ref_idx = 0
+        for start in range(0, len(ref_files), chunk_size):
+            end = min(start + chunk_size, len(ref_files))
+            batch_paths = ref_files[start:end]
+            if not batch_paths:
+                continue
+
+            batch = [load_single_frame(p) for p in batch_paths]
+            batch = np.stack(batch, axis=0)  # (B, H, W)
+
+            batch_noburst = remove_random_bursts(batch, threshold=10).astype(np.float32, copy=False)
+            B = batch_noburst.shape[0]
+
+            # self.reference_data_noburst[ref_idx:ref_idx + B] = batch_noburst
+            # sparse sampling for this chunk
+            self.sparse_reference_data[ref_idx:ref_idx + B] = batch_noburst[:, y_coords, x_coords]
+
+            ref_idx += B
+
+        # Fill query arrays
+        qry_idx = 0
+        for start in range(0, len(query_files), chunk_size):
+            end = min(start + chunk_size, len(query_files))
+            batch_paths = query_files[start:end]
+            if not batch_paths:
+                continue
+
+            batch = [load_single_frame(p) for p in batch_paths]
+            batch = np.stack(batch, axis=0)  # (B, H, W)
+
+            batch_noburst = remove_random_bursts(batch, threshold=10).astype(np.float32, copy=False)
+            B = batch_noburst.shape[0]
+
+            # self.query_data_noburst[qry_idx:qry_idx + B] = batch_noburst
+            self.sparse_query_data[qry_idx:qry_idx + B] = batch_noburst[:, y_coords, x_coords]
+
+            qry_idx += B
+
+        # Create sparse_event dict for downstream distance computation
         self.frames_sets = {
-            "all_pixels": (self.reference_data_noburst, self.query_data_noburst),
-            "subset": ( self.sparse_reference_data,  self.sparse_query_data)
+            "subset": (self.sparse_reference_data, self.sparse_query_data),
         }
 
-        self.output_dir = os.path.join(self.outdir, f"{ref_info['dataset_name']}", f"{ref_info['sequence_name']}_{query_info['sequence_name']}",
-                                       f"{config['frame_generator']}_{timewindow}")
+        self.output_dir = os.path.join(
+            self.outdir,
+            f"{ref_info['dataset_name']}",
+            f"{ref_info['sequence_name']}_{query_info['sequence_name']}",
+            f"{config['frame_generator']}_{timewindow}",
+        )
         os.makedirs(self.output_dir, exist_ok=True)
 
     def build_execute(self, config, data_config, ground_truth):
@@ -141,25 +245,41 @@ class sparse_event_baseline(EventBaseline):
         """
         print(f"Running baseline")
         from baselines.vpr_sparse_event.src.sparse_event_vpr.sparse_pixel_utils import compute_distance_matrices
+
         # Get the current device
-        device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-        # Parse results and return them in a standardized format
-        distance_matrices = compute_distance_matrices(self.frames_sets, device, self.baseline_config['sequence_length'])
-        # Save a png of the distance matrices
+        device = torch.device("cuda" if torch.cuda.is_available()
+                            else "mps" if torch.backends.mps.is_available()
+                            else "cpu")
+
+        distance_matrices = compute_distance_matrices(
+            self.frames_sets,
+            device,
+            self.baseline_config['sequence_length'],
+            # optional: override chunk_size here if you like
+            chunk_size=1000,
+        )
+
+        # Save PNGs + npy as before
         import matplotlib.pyplot as plt
         for key, matrix in distance_matrices.items():
-            plt.figure(figsize=(10, 8))
-            plt.imshow(matrix, cmap='viridis')
-            plt.colorbar()
-            plt.title(f'Distance Matrix - {key}')
-            plt.xlabel('Query Frames')
-            plt.ylabel('Reference Frames')
-            plt.savefig(f"{self.output_dir}/distance_matrix_{key}.png")
-            plt.close()
-        # Save the distance matrices
-        np.save(f"{self.output_dir}/all_pixels_seq.npy", distance_matrices['all_pixels_seq'])
+            if key.endswith("_seq"):
+                # Only visualize the seq matrices, or keep as you had it
+                pass
+
+        for key, matrix in distance_matrices.items():
+            if not key.endswith("_seq"):
+                plt.figure(figsize=(10, 8))
+                plt.imshow(matrix, cmap='viridis')
+                plt.colorbar()
+                plt.title(f'Distance Matrix - {key}')
+                plt.xlabel('Query Frames')
+                plt.ylabel('Reference Frames')
+                plt.savefig(f"{self.output_dir}/distance_matrix_{key}.png")
+                plt.close()
+
+        # np.save(f"{self.output_dir}/all_pixels_seq.npy", distance_matrices['all_pixels_seq'])
         np.save(f"{self.output_dir}/subset_seq.npy", distance_matrices['subset_seq'])
-    
+
     def parse_results(self, GT):
         # gather files
         all_files  = sorted(list(Path(self.output_dir).glob("*.npy")))

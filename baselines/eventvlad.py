@@ -9,6 +9,7 @@ import openpyxl
 from datetime import datetime, timezone
 import re, gdown, time
 import utils.functional as FUNC
+import shutil 
 
 class eventvlad_baseline(EventBaseline):
     def __init__(self):
@@ -94,27 +95,11 @@ class eventvlad_baseline(EventBaseline):
         ref_files   = ref_res['files']
         query_files = query_res['files']
 
-        # proceed to load arrays
-        self.reference_data = np.array([np.load(p) for p in ref_files])
-        self.query_data     = np.array([np.load(p) for p in query_files])
-
         # OPTIONAL: Create temporary directory to store converted data, if not using numpy arrays
-        self.temp_dir = tempfile.mkdtemp(prefix="baseline_data_")
-        self.ref_dir = os.path.join(self.temp_dir, ref_name)
-        self.query_dir = os.path.join(self.temp_dir, query_name)
-        self.ref_dir_out = os.path.join(self.temp_dir, f"{ref_name}_denoised")
-        self.query_dir_out = os.path.join(self.temp_dir, f"{query_name}_denoised")
-        os.makedirs(self.ref_dir, exist_ok=True)
-        os.makedirs(self.query_dir, exist_ok=True)
-        os.makedirs(self.ref_dir_out, exist_ok=True)
-        os.makedirs(self.query_dir_out, exist_ok=True)
-
-        # store the reference and query data to the temporary directory
-        for i, arr in enumerate(self.reference_data):
-            np.save(os.path.join(self.ref_dir, f"frame_{i:06d}.npy"), arr)
-        for i, arr in enumerate(self.query_data):
-            np.save(os.path.join(self.query_dir, f"frame_{i:06d}.npy"), arr)
-
+        self.ref_dir_out = os.path.join(config['data_path'], dataset_config['dataset']['name'], ref_name, f"{ref_name}-frames-{config['timewindows'][0]}-denoised")
+        self.query_dir_out = os.path.join(config['data_path'], dataset_config['dataset']['name'], query_name, f"{query_name}-frames-{config['timewindows'][0]}-denoised")
+    
+            
         self.output_dir = os.path.join(self.outdir, f"{ref_info['dataset_name']}", f"{ref_info['sequence_name']}_{query_info['sequence_name']}",
                                        f"{config['frame_generator']}_{timewindow}")
         os.makedirs(self.output_dir, exist_ok=True)
@@ -126,39 +111,43 @@ class eventvlad_baseline(EventBaseline):
         """
         # Denoise the images and output them to the temporary directory
         # Build the command as a single string
-        ref_convert = (
-            # Include command line arugments specific to the baseline
-            f'python utils/eventvlad_denoiser.py '
-            f'--input_dir {self.ref_dir} '
-            f'--model_path baselines/EventVLAD/denoiser_brisbane '
-            f'--save_dir {self.ref_dir_out} '
-            f'--use_gpu '
-            f'--show {0}'
-        )
-        query_convert = (
-            # Include command line arugments specific to the baseline
-            f"python utils/eventvlad_denoiser.py "
-            f"--input_dir {self.query_dir} "
-            f"--model_path baselines/EventVLAD/denoiser_brisbane "
-            f"--save_dir {self.query_dir_out} "
-            f"--use_gpu "
-            f"--show {0}"
-        )
-        # Convert all data to denoised images
-        self.ref_convert_cmd_str = ["pixi", "run", "bash", "-c", ref_convert]
-        result = subprocess.run(self.ref_convert_cmd_str, check=True)
-        print("STDOUT:", result.stdout)
-        if result.stderr:
-            print("STDERR:", result.stderr)
-        if result.returncode != 0:
-            raise RuntimeError(f"Baseline evaluation failed with return code {result.returncode}")
-        self.query_convert_cmd_str = ["pixi", "run", "bash", "-c", query_convert]
-        result = subprocess.run(self.query_convert_cmd_str, check=True)
-        print("STDOUT:", result.stdout)
-        if result.stderr:
-            print("STDERR:", result.stderr)
-        if result.returncode != 0:
-            raise RuntimeError(f"Baseline evaluation failed with return code {result.returncode}")
+        if not os.path.exists(self.ref_dir_out):
+            os.makedirs(self.ref_dir_out, exist_ok=True)
+            ref_convert = (
+                # Include command line arugments specific to the baseline
+                f'python utils/eventvlad_denoiser.py '
+                f'--input_dir {self.ref_directory} '
+                f'--model_path baselines/EventVLAD/denoiser_brisbane '
+                f'--save_dir {self.ref_dir_out} '
+                f'--use_gpu '
+                f'--show {0}'
+            )
+            # Convert all data to denoised images
+            self.ref_convert_cmd_str = ["pixi", "run", "bash", "-c", ref_convert]
+            result = subprocess.run(self.ref_convert_cmd_str, check=True)
+            print("STDOUT:", result.stdout)
+            if result.stderr:
+                print("STDERR:", result.stderr)
+            if result.returncode != 0:
+                raise RuntimeError(f"Baseline evaluation failed with return code {result.returncode}")
+        if not os.path.exists(self.query_dir_out):
+            os.makedirs(self.query_dir_out, exist_ok=True)
+            query_convert = (
+                # Include command line arugments specific to the baseline
+                f"python utils/eventvlad_denoiser.py "
+                f"--input_dir {self.query_directory} "
+                f"--model_path baselines/EventVLAD/denoiser_brisbane "
+                f"--save_dir {self.query_dir_out} "
+                f"--use_gpu "
+                f"--show {0}"
+            )
+            self.query_convert_cmd_str = ["pixi", "run", "bash", "-c", query_convert]
+            result = subprocess.run(self.query_convert_cmd_str, check=True)
+            print("STDOUT:", result.stdout)
+            if result.stderr:
+                print("STDERR:", result.stderr)
+            if result.returncode != 0:
+                raise RuntimeError(f"Baseline evaluation failed with return code {result.returncode}")
 
     def run(self):
         """
