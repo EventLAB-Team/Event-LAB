@@ -1670,25 +1670,55 @@ class E2VIDReconstructor:
             dt = dt[dt > 0]
             return float(np.median(dt)) if dt.size else 0.0
 
-        def _seconds_per_tick_from_dt(dt_med: float) -> float:
+        def _infer_seconds_per_tick(t_ds, sample=200_000) -> float:
             """
-            Decide seconds-per-tick from typical integer Δt magnitude.
-            - dt < 1        : already seconds (integer seconds)
-            - 1   .. 1e3    : microseconds per tick  -> 1e-6
-            - 1e3 .. 1e6    : nanoseconds per tick   -> 1e-9
-            - 1e6 .. 1e9    : milliseconds per tick  -> 1e-3  (coarse clocks)
-            else            : default 1.0
+            Infer seconds-per-tick from the magnitude of dt and overall span.
+            Works for int or float timestamp datasets.
             """
-            if dt_med <= 0:
+            n = int(t_ds.shape[0])
+            if n < 3:
                 return 1.0
-            if dt_med < 1.0:
+
+            step = max(1, n // sample)
+            t = np.asarray(t_ds[::step], dtype=np.float64)
+
+            # ensure monotonic-ish sampling
+            dt = np.diff(t)
+            dt_pos = dt[dt > 0]
+            if dt_pos.size == 0:
                 return 1.0
-            if dt_med < 1e3:
-                return 1e-6
-            if dt_med < 1e6:
-                return 1e-9
-            if dt_med < 1e9:
+
+            dt_med = float(np.median(dt_pos))
+            span = float(t[-1] - t[0])
+
+            # If it already looks like seconds (microsecond-ish deltas, span ~ a few seconds/minutes)
+            # Typical event dt in seconds is often <1e-3.
+            if dt_med < 1e-3:
+                return 1.0
+
+            # Now we assume raw units are larger-than-seconds ticks: ms/us/ns.
+            # Use span to disambiguate (much more stable than dt alone).
+            # Example: 60 seconds clip:
+            #   span ~ 60        -> seconds
+            #   span ~ 60,000    -> ms
+            #   span ~ 60,000,000 -> us
+            #   span ~ 60,000,000,000 -> ns
+            if span > 1e11:
+                return 1e-9   # nanoseconds
+            if span > 1e8:
+                return 1e-6   # microseconds
+            if span > 1e5:
+                return 1e-3   # milliseconds
+
+            # Ambiguous short spans: fall back to dt magnitude
+            # If dt_med is like 1..20, it's very likely ms ticks.
+            if 1.0 <= dt_med <= 50.0:
                 return 1e-3
+            if 50.0 < dt_med <= 50_000.0:
+                return 1e-6
+            if dt_med > 50_000.0:
+                return 1e-9
+
             return 1.0
 
         # ---- event dataset/group discovery -------------------------------------
@@ -1749,11 +1779,11 @@ class E2VIDReconstructor:
                     if not t_key:
                         raise ValueError("Events group has no time dataset.")
                     t_ds = events[t_key]
+                    dt_med = _median_dt_from_dataset(t_ds)
+                    s_per_tick = _infer_seconds_per_tick(t_ds)
+                    print(f"[t] dtype={t_ds.dtype} t0={float(t_ds[0])} t1={float(t_ds[1])} "
+                        f"dt_med={dt_med} inferred_s_per_tick={s_per_tick}")
                     # unit detection
-                    if np.issubdtype(t_ds.dtype, np.floating):
-                        s_per_tick = 1.0
-                    else:
-                        s_per_tick = _seconds_per_tick_from_dt(_median_dt_from_dataset(t_ds))
                     t0_raw = float(t_ds[0])
                 else:
                     # compound Nx>=3 dataset; assume column 2 is time if unnamed
@@ -1769,12 +1799,7 @@ class E2VIDReconstructor:
                     if n == 0:
                         raise ValueError("No events in dataset.")
                     t0_raw = float(events[0, idx_t])
-                    if np.issubdtype(events.dtype[idx_t], np.floating):
-                        s_per_tick = 1.0
-                    else:
-                        step = max(1, n // 200_000)
-                        dt_med = np.median(np.diff(np.asarray(events[::step, idx_t])))
-                        s_per_tick = _seconds_per_tick_from_dt(float(dt_med))
+                    s_per_tick = _infer_seconds_per_tick(t_ds)
 
                 start_time_s = t0_raw * s_per_tick
                 if offset_ns:
@@ -1805,10 +1830,7 @@ class E2VIDReconstructor:
                     raise ValueError("No events in datasets.")
 
                 # unit detection
-                if np.issubdtype(t_ds.dtype, np.floating):
-                    s_per_tick = 1.0
-                else:
-                    s_per_tick = _seconds_per_tick_from_dt(_median_dt_from_dataset(t_ds))
+                s_per_tick = _infer_seconds_per_tick(t_ds)
                 t0_raw = float(t_ds[0])
                 start_time_s = t0_raw * s_per_tick
 
@@ -1854,12 +1876,7 @@ class E2VIDReconstructor:
                     idx_p = 3 if events.shape[1] > 3 else None
 
                 # unit detection
-                if np.issubdtype(events.dtype[idx_t], np.floating):
-                    s_per_tick = 1.0
-                else:
-                    step = max(1, n // 200_000)
-                    dt_med = np.median(np.diff(np.asarray(events[::step, idx_t])))
-                    s_per_tick = _seconds_per_tick_from_dt(float(dt_med))
+                s_per_tick = _infer_seconds_per_tick(t_ds)
 
                 t0_raw = float(events[0, idx_t])
                 start_time_s = t0_raw * s_per_tick
@@ -1914,8 +1931,6 @@ class E2VIDReconstructor:
                 f'--output_folder {output_dir} '
                 f'--window_duration {timewindow_ms} '
                 f'--fixed_duration '
-                f'--auto_hdr '
-                f'--color '
                 f'--hot_pixels_file {self.hot_pixels_file}'
             )
         else:

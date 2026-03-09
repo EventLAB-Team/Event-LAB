@@ -1,6 +1,6 @@
-[project]
+[workspace]
 name = "Event-LAB"
-version = "0.0.1"
+version = "0.1.1"
 description = "Event-based localization methods benchmarking toolkit"
 channels = ["conda-forge", "robostack-noetic"]
 platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
@@ -45,6 +45,7 @@ wandb = "*"
 pyarrow = "*"
 fastparquet = "*"
 torchvision = "*"
+huggingface_hub = ">=1.5.0,<2"
 
 [target.linux-64.dependencies]
 cuda-version = "12.*"
@@ -66,6 +67,7 @@ libcufile-dev = "*"
 libcufft-dev = "*"
 libcurand-dev = "*"
 libcusolver-dev = "*"
+safetensors = "*"
 
 [target.linux-64.pypi-dependencies]
 samna = "*"

@@ -77,17 +77,17 @@ class vprmethods_baseline(EventBaseline):
 
         # OPTIONAL: Create temporary directory to store converted data, if not using numpy arrays
         self.temp_dir = tempfile.mkdtemp(prefix="baseline_data_")
-        self.ref_dir = os.path.join(self.temp_dir, self.ref_name)
-        self.query_dir = os.path.join(self.temp_dir, self.query_name)
+        self.ref_dir = self.ref_directory
+        self.query_dir = self.query_directory
         os.makedirs(self.ref_dir, exist_ok=True)
         os.makedirs(self.query_dir, exist_ok=True)
-        import shutil
-        # Copy files to temporary directory using shutil
-        for idx, ref_file in enumerate(ref_files):
-            shutil.copy(ref_file, os.path.join(self.ref_dir, f"frame_{idx:06d}.png"))
+        # import shutil
+        # # Copy files to temporary directory using shutil
+        # for idx, ref_file in enumerate(ref_files):
+        #     shutil.copy(ref_file, os.path.join(self.ref_dir, f"frame_{idx:06d}.png"))
 
-        for idx, query_file in enumerate(query_files):
-            shutil.copy(query_file, os.path.join(self.query_dir, f"frame_{idx:06d}.png"))
+        # for idx, query_file in enumerate(query_files):
+        #     shutil.copy(query_file, os.path.join(self.query_dir, f"frame_{idx:06d}.png"))
 
 
         # Set the output folder
