@@ -73,14 +73,15 @@ class EventDataset():
         # Download the sequence data if raw data does not exist
         if not os.path.exists(self.dataset_raw):
             download_sequence_data(self.config, self.data_config, self.dataset_name, self.sequence_name)
+        
         # Format the data
         if not os.path.exists(self.dataset_formatted):
             format_sequence_data(self.config, self.data_config, self.dataset_name, self.sequence_name)
             # Get basic dataset info without loading all data
             self._load_dataset_metadata()
     
-        # Check if the reconstructed dataset exists, if not, create frames (count and/or reconstruction)
-        for idx, self.full_dataset_path in enumerate(self.full_dataset_paths):
+        # For non-streaming, check if the reconstructed dataset exists, if not, create frames (count and/or reconstruction)
+        for idx, self.full_dataset_path in enumerate(self.full_dataset_paths) and not self.config['stream']:
             if not os.path.exists(self.full_dataset_path):
                 self._load_dataset_metadata()
                 # Load hot pixels if available
@@ -97,96 +98,6 @@ class EventDataset():
                                             self.timewindow_list[idx], 
                                             self.reconstruction_types[idx], 
                                             recon=self.config['frame_generator'])
-                    
-        def check_download_size(sequence_url):
-            try:
-                response = requests.head(sequence_url, allow_redirects=True, timeout=30)
-                response.raise_for_status()
-                
-                # Get the Content-Length header
-                size_header = response.headers.get('Content-Length')
-                if size_header:
-                    return int(size_header)
-                else:
-                    print("Warning: Server did not provide file size")
-                    return None
-                
-            except requests.RequestException as e:
-                print(f"Error checking file size: {e}")
-                return None
-
-        ZENODO_FILE_RE = re.compile(
-            r"^https?://(?:www\.)?zenodo\.org/records?/(\d+)/files/([^/?#]+)"
-        )
-
-
-        def _download_headers():
-            headers = {
-                "User-Agent": "EventLAB/1.0 (+https://github.com/EventLAB-Team/Event-LAB)",
-                "Accept": "application/octet-stream,application/json;q=0.9,*/*;q=0.8",
-            }
-            token = os.getenv("ZENODO_API_TOKEN") or os.getenv("ZENODO_TOKEN")
-            if token:
-                headers["Authorization"] = f"Bearer {token}"
-            return headers
-
-
-        def _resolve_zenodo_file(url: str, session: requests.Session):
-            """
-            Resolve a Zenodo pretty file URL to the actual downloadable API file URL,
-            and return (download_url, size, checksum).
-            If it's not a Zenodo records/files URL, return the input URL unchanged.
-            """
-            m = ZENODO_FILE_RE.match(url)
-            if not m:
-                return url, None, None
-
-            record_id = m.group(1)
-            wanted_name = unquote(m.group(2))
-
-            meta_url = f"https://zenodo.org/api/records/{record_id}"
-            r = session.get(meta_url, timeout=60, allow_redirects=True)
-            r.raise_for_status()
-            meta = r.json()
-
-            files = meta.get("files", [])
-            file_entry = None
-            for f in files:
-                key = f.get("key") or f.get("filename")
-                if key == wanted_name:
-                    file_entry = f
-                    break
-
-            if file_entry is None:
-                available = [f.get("key") or f.get("filename") for f in files]
-                raise FileNotFoundError(
-                    f"Zenodo record {record_id} does not contain '{wanted_name}'. "
-                    f"Available files: {available}"
-                )
-
-            links = file_entry.get("links", {})
-            download_url = (
-                links.get("self")
-                or links.get("content")
-                or links.get("download")
-            )
-            if not download_url:
-                raise RuntimeError(
-                    f"Could not resolve a downloadable link for '{wanted_name}' "
-                    f"from Zenodo record {record_id}"
-                )
-
-            size = file_entry.get("size")
-            checksum = file_entry.get("checksum")
-            return download_url, size, checksum
-
-
-        def _md5(path, chunk_size=1024 * 1024):
-            h = hashlib.md5()
-            with open(path, "rb") as f:
-                for chunk in iter(lambda: f.read(chunk_size), b""):
-                    h.update(chunk)
-            return h.hexdigest()
 
 
         # download the ground truth, if available
@@ -207,12 +118,10 @@ class EventDataset():
             max_retries = 5
 
             with requests.Session() as session:
-                session.headers.update(_download_headers())
+                session.headers.update(self._download_headers())
 
                 # Resolve Zenodo pretty URL -> actual file URL + metadata
-                resolved_url, resolved_size, resolved_checksum = _resolve_zenodo_file(gt_url, session)
-
-                # Fall back to your existing size helper if API metadata didn't include it
+                resolved_url, resolved_size, resolved_checksum = self._resolve_zenodo_file(gt_url, session)
                 size = resolved_size if resolved_size is not None else check_download_size(resolved_url)
 
                 if request_input and size is not None:
@@ -283,7 +192,7 @@ class EventDataset():
                         # optional checksum verification if Zenodo metadata gave md5
                         if resolved_checksum and resolved_checksum.startswith("md5:"):
                             expected_md5 = resolved_checksum.split("md5:", 1)[1]
-                            actual_md5 = _md5(gt_file)
+                            actual_md5 = self._md5(gt_file)
                             if actual_md5 != expected_md5:
                                 raise IOError(
                                     f"MD5 mismatch for {gt_file}: "
@@ -320,6 +229,92 @@ class EventDataset():
                             print(f"Partial file saved: {current_size / (1024 * 1024):.1f}MB")
                         raise
 
+        def check_download_size(sequence_url):
+            try:
+                response = requests.head(sequence_url, allow_redirects=True, timeout=30)
+                response.raise_for_status()
+                
+                # Get the Content-Length header
+                size_header = response.headers.get('Content-Length')
+                if size_header:
+                    return int(size_header)
+                else:
+                    print("Warning: Server did not provide file size")
+                    return None
+                
+            except requests.RequestException as e:
+                print(f"Error checking file size: {e}")
+                return None
+
+    def _download_headers(self):
+        headers = {
+            "User-Agent": "EventLAB/1.0 (+https://github.com/EventLAB-Team/Event-LAB)",
+            "Accept": "application/octet-stream,application/json;q=0.9,*/*;q=0.8",
+        }
+        token = os.getenv("ZENODO_API_TOKEN") or os.getenv("ZENODO_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+
+    def _resolve_zenodo_file(self, url, session):
+        """
+        Resolve a Zenodo pretty file URL to the actual downloadable API file URL,
+        and return (download_url, size, checksum).
+        If it's not a Zenodo records/files URL, return the input URL unchanged.
+        """
+        ZENODO_FILE_RE = re.compile(r"^https?://(?:www\.)?zenodo\.org/records?/(\d+)/files/([^/?#]+)")
+        m = ZENODO_FILE_RE.match(url)
+        if not m:
+            return url, None, None
+
+        record_id = m.group(1)
+        wanted_name = unquote(m.group(2))
+
+        meta_url = f"https://zenodo.org/api/records/{record_id}"
+        r = session.get(meta_url, timeout=60, allow_redirects=True)
+        r.raise_for_status()
+        meta = r.json()
+
+        files = meta.get("files", [])
+        file_entry = None
+        for f in files:
+            key = f.get("key") or f.get("filename")
+            if key == wanted_name:
+                file_entry = f
+                break
+
+        if file_entry is None:
+            available = [f.get("key") or f.get("filename") for f in files]
+            raise FileNotFoundError(
+                f"Zenodo record {record_id} does not contain '{wanted_name}'. "
+                f"Available files: {available}"
+            )
+
+        links = file_entry.get("links", {})
+        download_url = (
+            links.get("self")
+            or links.get("content")
+            or links.get("download")
+        )
+        if not download_url:
+            raise RuntimeError(
+                f"Could not resolve a downloadable link for '{wanted_name}' "
+                f"from Zenodo record {record_id}"
+            )
+
+        size = file_entry.get("size")
+        checksum = file_entry.get("checksum")
+        return download_url, size, checksum
+
+
+    def _md5(self, path, chunk_size=1024 * 1024):
+        h = hashlib.md5()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(chunk_size), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    
     def _time_scale_from_config(self):
         """
         Read format->data->timestamp_val from self.data_config.
@@ -361,7 +356,6 @@ class EventDataset():
 
     def _load_dataset_metadata(self, *, rdcc_nbytes=64*1024*1024, rdcc_nslots=1_048_579,
                             max_tail_bytes=64*1024*1024, warn_chunk_bytes=256*1024*1024):
-        import os, h5py, numpy as np
 
         def _read_first_last_scalar_1d(dset):
             n = int(dset.shape[0])

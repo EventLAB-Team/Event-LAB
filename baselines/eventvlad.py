@@ -12,50 +12,62 @@ import utils.functional as FUNC
 import shutil 
 
 class eventvlad_baseline(EventBaseline):
-    def __init__(self):
+    def __init__(self, config, dataset_config, reference, query):
         super().__init__()
 
+        # Set the experimental details as instance variables
+        self.config = config
+        self.dataset_config = dataset_config
+        self.reference = reference
+        self.query = query
+
+        # Set the baseline name
         self.name = "eventvlad"
+
         # Check if the baseline repository is already cloned
         self.repo_path = "./baselines/EventVLAD"
+
         # Baseline URL
         self.url = "https://github.com/alexjunholee/EventVLAD.git"
         if not os.path.exists(self.repo_path):
             clone_repo(self.url, destination=self.repo_path)
-            file_id = "1xdoGI7vmNelaR_D9-FUk5SbB3webqa5c"  # from your URL
+            file_id = "1xdoGI7vmNelaR_D9-FUk5SbB3webqa5c" # Denoiser weights
             out = "./baselines/EventVLAD/denoiser_brisbane"
+            gdown.download(id=file_id, output=out, quiet=False)
 
-            gdown.download(id=file_id, output=out, quiet=False)  # no need for the usercontent URL
-
+        # Set the path to the baseline configuration file
         self.baseline_config_path = './baselines/eventvlad.yaml'
-        self.matrix_type = 'distance' # options are 'similarity' or 'distance'
+        
+        # Set the type of matrix generated for evaluation (distance or similarity)
+        self.matrix_type = 'distance'
 
         # Load the baseline configuration
         with open(self.baseline_config_path, 'r') as file:
             self.baseline_config = yaml.safe_load(file)
+
         # Check if the pytorch-NetVlad path exists
         if not os.path.exists(self.baseline_config['netvlad_path']):
             netvlad_url = "https://github.com/Nanne/pytorch-NetVlad.git"
             clone_repo(netvlad_url, destination=self.baseline_config['netvlad_path'])
+        # Download the NetVLAD weights if not already present    
         if not os.path.exists('./baselines/EventVLAD/vgg16_eventvlad.tar'):
             print("Downloading the eventvlad weights...")
             # Get the eventvlad weights
             file_id = "1rSIhH1pk8ADxfqYQXoos_hTuWyfiWSu3"
             out = './baselines/EventVLAD/vgg16_eventvlad.tar'
-            gdown.download(id=file_id, output=out, quiet=False)  # no need for the usercontent URL
+            gdown.download(id=file_id, output=out, quiet=False)
 
         # Create the data output folder
         self.outdir = './output/eventvlad'
         os.makedirs(self.outdir, exist_ok=True)
 
-    def format_data(self, config, dataset_config, reference, query, timewindow):
+    def format_data(self, timewindow):
         """
         Format the reference and query data for the baseline.
         """
-        self.config=config
         # Get experimental details
-        ref_info = reference.get_dataset_info()
-        query_info = query.get_dataset_info()
+        ref_info = self.reference.get_dataset_info()
+        query_info = self.query.get_dataset_info()
 
         ref_name = ref_info['sequence_name']
         query_name = query_info['sequence_name']

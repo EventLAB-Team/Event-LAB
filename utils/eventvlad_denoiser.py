@@ -6,12 +6,9 @@ import numpy as np
 import cv2
 import torch
 import matplotlib.pyplot as plt
-
-# ---- import your models here ----
 import sys
 sys.path.append('./baselines/EventVLAD')
 from networks import EventDenoiser  # add other models in build_model if needed
-
 
 # ----------------- Model factory -----------------
 def build_model(model_type: str, dep_u: int, dep_s: int, slope: float) -> torch.nn.Module:
