@@ -81,7 +81,9 @@ class EventDataset():
             self._load_dataset_metadata()
     
         # For non-streaming, check if the reconstructed dataset exists, if not, create frames (count and/or reconstruction)
-        for idx, self.full_dataset_path in enumerate(self.full_dataset_paths) and not self.config['stream']:
+        for idx, self.full_dataset_path in enumerate(self.full_dataset_paths):
+            if self.config['stream']:
+                continue
             if not os.path.exists(self.full_dataset_path):
                 self._load_dataset_metadata()
                 # Load hot pixels if available
