@@ -22,3 +22,5 @@ output/
 # Other
 .vscode/
 utils/__pycache__/
+
+config.yaml
