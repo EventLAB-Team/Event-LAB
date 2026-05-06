@@ -73,8 +73,8 @@ def main():
     for _, timewindow in enumerate(reference.timewindow_list):
 
         # Format the data for the baseline, if pre-generated
-        if config['stream']:
-            baseline.format_data(config, dataset_config, reference, query, timewindow)
+        # if config['stream']:
+        baseline.format_data(config, dataset_config, reference, query, timewindow)
 
         # Build the execution command for the baseline
         baseline.build_execute(config, dataset_config, GT_file)

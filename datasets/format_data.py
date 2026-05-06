@@ -1,20 +1,307 @@
 #!/usr/bin/env python3
-"""
-Generalized HDF5 Formatter
-Converts various sensor data formats to standardized HDF5 format based on configuration
-"""
+"""Dataset formatting and event-frame generation utilities."""
 
-import os, h5py, subprocess, requests, json, cv2, torch, glob
-import numpy as np
+import glob
+import json
+import os
+import subprocess
 from abc import ABC, abstractmethod
+
+import h5py
+import numpy as np
+import requests
 from tqdm import tqdm
-from PIL import Image
-import matplotlib.pyplot as plt
-# --- at top of module (once) ---
+
 EVENT_T_KEYS = ("t", "timestamp", "timestamps", "time", "times")
 EVENT_X_KEYS = ("x", "x_coordinate", "x_coordinates", "u", "col", "column")
 EVENT_Y_KEYS = ("y", "y_coordinate", "y_coordinates", "v", "row")
 EVENT_P_KEYS = ("p", "polarity", "polarities", "pol", "polarity_bit", "polarity_bits")
+
+
+class _ColumnView:
+    """Lazy 1-D view over a numeric NxC event dataset."""
+
+    def __init__(self, base, col):
+        self._base = base
+        self._col = col
+
+    def __getitem__(self, idx):
+        return self._base[idx, self._col]
+
+    @property
+    def shape(self):
+        return (self._base.shape[0],)
+
+    @property
+    def dtype(self):
+        return self._base.dtype
+
+
+class _FieldView:
+    """Lazy 1-D view over a field in a compound event dataset."""
+
+    def __init__(self, base, field):
+        self._base = base
+        self._field = field
+
+    def __getitem__(self, idx):
+        return self._base[idx][self._field]
+
+    @property
+    def shape(self):
+        return (self._base.shape[0],)
+
+    @property
+    def dtype(self):
+        return self._base.dtype[self._field]
+
+
+def parse_timestamp_val_to_scale(data_config):
+    """
+    Returns ticks-per-second from data_config['format']['data']['timestamp_val'].
+    Accepts: 'ns'|'us'|'ms'|'s' or a positive number (ticks/s).
+    """
+    val = (data_config.get('format', {})
+                    .get('data', {})
+                    .get('timestamp_val', None))
+    if val is None:
+        return None
+    if isinstance(val, str):
+        v = val.strip().lower()
+        if v in ('ns', 'nanosecond', 'nanoseconds'):
+            return 1e9
+        if v in ('us', 'μs', 'microsecond', 'microseconds'):
+            return 1e6
+        if v in ('ms', 'millisecond', 'milliseconds'):
+            return 1e3
+        if v in ('s', 'sec', 'second', 'seconds'):
+            return 1.0
+        try:
+            num = float(v)
+            if num > 0:
+                return num
+        except Exception:
+            pass
+        raise ValueError(f"Unsupported timestamp_val='{val}'. Use ns/us/ms/s or numeric ticks/s.")
+    if isinstance(val, (int, float, np.integer, np.floating)) and val > 0:
+        return float(val)
+    raise ValueError(f"Invalid timestamp_val={val!r} (expected ns/us/ms/s or positive number)")
+
+
+def _pick_dataset_key(group, keys):
+    for key in keys:
+        if key in group and isinstance(group[key], h5py.Dataset):
+            return key
+    return None
+
+
+def _has_any_key(keys, aliases):
+    return any(key in keys for key in aliases)
+
+
+def _locate_events_node(h5f, include_data=False):
+    names = ('events', 'columns') + (('data',) if include_data else ())
+    for name in names:
+        if name in h5f:
+            return h5f[name]
+
+    for _, obj in h5f.items():
+        if isinstance(obj, h5py.Group):
+            keys = obj.keys()
+            if (_has_any_key(keys, EVENT_X_KEYS)
+                and _has_any_key(keys, EVENT_Y_KEYS)
+                and _has_any_key(keys, EVENT_T_KEYS)):
+                return obj
+
+    event_node = None
+
+    def _visit(name, obj):
+        nonlocal event_node
+        if event_node is not None:
+            return
+        if isinstance(obj, h5py.Group):
+            keys = obj.keys()
+            if (_has_any_key(keys, EVENT_X_KEYS)
+                and _has_any_key(keys, EVENT_Y_KEYS)
+                and _has_any_key(keys, EVENT_T_KEYS)):
+                event_node = obj
+        elif isinstance(obj, h5py.Dataset):
+            is_event_name = name.endswith("/events") or name == "events"
+            is_event_shape = obj.dtype.names or (obj.ndim == 2 and obj.shape[1] >= 3)
+            if is_event_name and is_event_shape:
+                event_node = obj
+
+    h5f.visititems(_visit)
+    if event_node is None:
+        searched = "'/events', '/columns'" + (", '/data'" if include_data else "")
+        raise ValueError(f"No events found in HDF5 file (looked for {searched}, or any group with x/y/t aliases).")
+    return event_node
+
+
+def _event_field_handles(events):
+    """
+    Normalize an events container to lazy field handles:
+    ds['t'], ds['x'], ds['y'], ds['p'] where p may be None.
+    """
+    if isinstance(events, h5py.Group):
+        t_key = _pick_dataset_key(events, EVENT_T_KEYS)
+        x_key = _pick_dataset_key(events, EVENT_X_KEYS)
+        y_key = _pick_dataset_key(events, EVENT_Y_KEYS)
+        p_key = _pick_dataset_key(events, EVENT_P_KEYS)
+
+        if not (t_key or x_key or y_key):
+            raise ValueError("events group has no recognizable t/x/y datasets (checked aliases).")
+
+        probe = events[t_key] if t_key else (events[x_key] if x_key else events[y_key])
+        return {
+            "t": events[t_key] if t_key else None,
+            "x": events[x_key] if x_key else None,
+            "y": events[y_key] if y_key else None,
+            "p": events[p_key] if p_key else None,
+        }, int(probe.shape[0])
+
+    if isinstance(events, h5py.Dataset):
+        n_total = int(events.shape[0])
+
+        if events.dtype.names:
+            names_lut = {name.lower(): name for name in events.dtype.names}
+
+            def _field_name(aliases):
+                for alias in aliases:
+                    if alias in names_lut:
+                        return names_lut[alias]
+                return None
+
+            t_field = _field_name(EVENT_T_KEYS)
+            x_field = _field_name(EVENT_X_KEYS)
+            y_field = _field_name(EVENT_Y_KEYS)
+            p_field = _field_name(EVENT_P_KEYS)
+
+            if not (t_field or x_field or y_field):
+                raise ValueError("compound events dataset missing time/coords fields (checked aliases).")
+
+            return {
+                "t": _FieldView(events, t_field) if t_field else None,
+                "x": _FieldView(events, x_field) if x_field else None,
+                "y": _FieldView(events, y_field) if y_field else None,
+                "p": _FieldView(events, p_field) if p_field else None,
+            }, n_total
+
+        if events.ndim == 2 and events.shape[1] >= 3:
+            return {
+                "x": _ColumnView(events, 0),
+                "y": _ColumnView(events, 1),
+                "t": _ColumnView(events, 2),
+                "p": _ColumnView(events, 3) if events.shape[1] > 3 else None,
+            }, n_total
+
+        raise ValueError("Unsupported events dataset shape; expected compound or numeric Nx>=3.")
+
+    raise TypeError(f"Unsupported events node type: {type(events)}")
+
+
+def _linear_hot_pixels(hot_pixels, width, height):
+    if hot_pixels is None:
+        return None
+
+    pixels = np.asarray(hot_pixels, dtype=np.int64)
+    if pixels.size:
+        pixels = pixels.reshape(-1, 2)
+        in_bounds = (
+            (pixels[:, 0] >= 0) & (pixels[:, 0] < width) &
+            (pixels[:, 1] >= 0) & (pixels[:, 1] < height)
+        )
+        pixels = pixels[in_bounds]
+        hot_lin = pixels[:, 1] * width + pixels[:, 0]
+    else:
+        hot_lin = np.empty((0,), dtype=np.int64)
+
+    print(f"Hot pixel filtering enabled: {len(hot_lin)} pixels will be excluded")
+    return hot_lin
+
+
+def _valid_coord_mask(x, y, width, height):
+    return (x >= 0) & (x < width) & (y >= 0) & (y < height)
+
+
+def _record_out_of_bounds(owner, x, y, invalid_mask):
+    count = int(np.count_nonzero(invalid_mask))
+    if count == 0:
+        return
+
+    owner.total_out_of_bounds += count
+    if owner.warned_already:
+        return
+
+    invalid_x = x[invalid_mask]
+    invalid_y = y[invalid_mask]
+    print("Warning: Found out-of-bounds events. Example ranges:")
+    print(f"  X range: {invalid_x.min()} - {invalid_x.max()} (valid: 0 - {owner.width-1})")
+    print(f"  Y range: {invalid_y.min()} - {invalid_y.max()} (valid: 0 - {owner.height-1})")
+    print("  Will continue counting but suppress further warnings...")
+    owner.warned_already = True
+
+
+def _hot_pixel_keep_mask(owner, x, y, hot_lin):
+    if hot_lin is None or not x.size:
+        return np.ones(x.shape, dtype=bool)
+
+    lin = y.astype(np.int64) * owner.width + x.astype(np.int64)
+    hot_mask = np.isin(lin, hot_lin, assume_unique=False)
+    owner.total_hot_pixels_filtered += int(hot_mask.sum())
+    return ~hot_mask
+
+
+def _sample_times(t_source, sample=200_000):
+    n = int(t_source.shape[0])
+    if n == 0:
+        return np.empty((0,), dtype=np.float64)
+    step = max(1, n // sample)
+    return np.asarray(t_source[::step], dtype=np.float64)
+
+
+def _median_dt_from_times(t_source, sample=200_000):
+    if int(t_source.shape[0]) <= 2:
+        return 0.0
+    ticks = _sample_times(t_source, sample)
+    dt = np.diff(ticks)
+    dt = dt[dt > 0]
+    return float(np.median(dt)) if dt.size else 0.0
+
+
+def _infer_seconds_per_tick(t_source, sample=200_000):
+    """
+    Infer seconds-per-tick from timestamp magnitude.
+    Explicit dataset config is still preferred where available.
+    """
+    if int(t_source.shape[0]) < 3:
+        return 1.0
+
+    ticks = _sample_times(t_source, sample)
+    dt = np.diff(ticks)
+    dt_pos = dt[dt > 0]
+    if dt_pos.size == 0:
+        return 1.0
+
+    dt_med = float(np.median(dt_pos))
+    span = float(ticks[-1] - ticks[0])
+
+    if dt_med < 1e-3:
+        return 1.0
+    if span > 1e11:
+        return 1e-9
+    if span > 1e8:
+        return 1e-6
+    if span > 1e5:
+        return 1e-3
+    if 1.0 <= dt_med <= 50.0:
+        return 1e-3
+    if 50.0 < dt_med <= 50_000.0:
+        return 1e-6
+    if dt_med > 50_000.0:
+        return 1e-9
+    return 1.0
+
 
 class DataFormatter(ABC):
     """Abstract base class for data formatters"""
@@ -67,14 +354,7 @@ class BagEventFormatter(DataFormatter):
             available_topics = set(info[1].keys())
             
             print(f"Available topics in bag: {list(available_topics)}")
-            
-            # Debug: Show topic info structure
-            if available_topics:
-                sample_topic = list(available_topics)[0]
-                sample_info = info[1][sample_topic]
-                print(f"Sample topic info attributes: {dir(sample_info)}")
-                print(f"Sample topic info: {sample_info}")
-            
+
             # Find which event topics actually exist in the bag
             valid_event_topics = []
             for event_topic in event_contents:
@@ -321,11 +601,6 @@ def format_sequence_data(config, data_config, dataset_name, sequence_name):
     formatter = GeneralizedHDF5Formatter(config, data_config, dataset_name, sequence_name)
     formatter.format_data(input_file, output_file)
 
-#!/usr/bin/env python3
-"""
-Generalized Event Frame Builder
-Creates frame representations from event data using memory-efficient streaming
-"""
 class FrameAccumulator(ABC):
     """Abstract base class for different frame accumulation methods"""
     
@@ -376,18 +651,10 @@ class EventCountFrameAccumulator:
         self.total_hot_pixels_filtered = 0
         self.warned_already = False
 
-        # Precompute linear hot-pixel indices for O(1) isin checks
-        if self.hot_pixels is not None:
-            hp = np.asarray(self.hot_pixels, dtype=np.int64)
-            inb = (hp[:, 0] >= 0) & (hp[:, 0] < self.width) & (hp[:, 1] >= 0) & (hp[:, 1] < self.height)
-            hp = hp[inb] if hp.size else hp
-            self._hot_lin = (hp[:, 1] * self.width + hp[:, 0]) if hp.size else np.empty((0,), dtype=np.int64)
-            print(f"Hot pixel filtering enabled: {len(self._hot_lin)} pixels will be excluded")
-        else:
-            self._hot_lin = None
+        self._hot_lin = _linear_hot_pixels(self.hot_pixels, self.width, self.height)
 
     def _mask_valid(self, x, y):
-        return (x >= 0) & (x < self.width) & (y >= 0) & (y < self.height)
+        return _valid_coord_mask(x, y, self.width, self.height)
 
     def accumulate_by_count(self, x, y, t, p, start_idx=0):
         """
@@ -412,24 +679,14 @@ class EventCountFrameAccumulator:
         # Bounds check
         valid = self._mask_valid(xs, ys)
         if not np.all(valid):
-            self.total_out_of_bounds += int((~valid).sum())
-            if not self.warned_already and (~valid).any():
-                invx, invy = xs[~valid], ys[~valid]
-                print("Warning: Found out-of-bounds events. Example ranges:")
-                print(f"  X range: {invx.min()} - {invx.max()} (valid: 0 - {self.width-1})")
-                print(f"  Y range: {invy.min()} - {invy.max()} (valid: 0 - {self.height-1})")
-                print("  Will continue counting but suppress further warnings...")
-                self.warned_already = True
+            _record_out_of_bounds(self, xs, ys, ~valid)
         xs = xs[valid]; ys = ys[valid]
         if ts is not None: ts = ts[valid]
         if ps is not None: ps = ps[valid]
 
         # Hot-pixel removal
-        if self._hot_lin is not None and xs.size:
-            lin_all = (ys.astype(np.int64) * self.width + xs.astype(np.int64))
-            hot = np.isin(lin_all, self._hot_lin, assume_unique=False)
-            self.total_hot_pixels_filtered += int(hot.sum())
-            keep = ~hot
+        keep = _hot_pixel_keep_mask(self, xs, ys, self._hot_lin)
+        if not np.all(keep):
             xs, ys = xs[keep], ys[keep]
             if ts is not None: ts = ts[keep]
             if ps is not None: ps = ps[keep]
@@ -516,18 +773,10 @@ class CountFrameAccumulator(FrameAccumulator):
         self.total_hot_pixels_filtered = 0
         self.warned_already = False
 
-        # Precompute linear hot-pixel indices for O(1) isin checks
-        if self.hot_pixels is not None:
-            hp = np.asarray(self.hot_pixels, dtype=np.int64)
-            inb = (hp[:,0] >= 0) & (hp[:,0] < self.width) & (hp[:,1] >= 0) & (hp[:,1] < self.height)
-            hp = hp[inb] if hp.size else hp
-            self._hot_lin = (hp[:,1] * self.width + hp[:,0]) if hp.size else np.empty((0,), dtype=np.int64)
-            print(f"Hot pixel filtering enabled: {len(self._hot_lin)} pixels will be excluded")
-        else:
-            self._hot_lin = None
+        self._hot_lin = _linear_hot_pixels(self.hot_pixels, self.width, self.height)
 
     def _mask_valid(self, x, y):
-        return (x >= 0) & (x < self.width) & (y >= 0) & (y < self.height)
+        return _valid_coord_mask(x, y, self.width, self.height)
 
     def accumulate_events(self, x, y, t, p, frame_start_time, frame_end_time):
         # The builder passes only the frame’s slice; keep time check for safety.
@@ -542,25 +791,15 @@ class CountFrameAccumulator(FrameAccumulator):
             return np.zeros((self.height, self.width), dtype=np.float32)
 
         if np.any(~valid):
-            self.total_out_of_bounds += int((~valid).sum())
-            if not self.warned_already:
-                invx, invy = x[~valid], y[~valid]
-                print(f"Warning: Found out-of-bounds events. Example ranges:")
-                print(f"  X range: {invx.min()} - {invx.max()} (valid: 0 - {self.width-1})")
-                print(f"  Y range: {invy.min()} - {invy.max()} (valid: 0 - {self.height-1})")
-                print("  Will continue counting but suppress further warnings...")
-                self.warned_already = True
+            _record_out_of_bounds(self, x, y, ~valid)
         x = x[valid]; y = y[valid]
 
         # Hot-pixel removal
-        if self._hot_lin is not None and x.size:
-            lin = (y.astype(np.int64) * self.width + x.astype(np.int64))
-            hot = np.isin(lin, self._hot_lin, assume_unique=False)
-            self.total_hot_pixels_filtered += int(hot.sum())
-            if hot.any():
-                x, y = x[~hot], y[~hot]
-                if x.size == 0:
-                    return np.zeros((self.height, self.width), dtype=np.float32)
+        keep = _hot_pixel_keep_mask(self, x, y, self._hot_lin)
+        if not np.all(keep):
+            x, y = x[keep], y[keep]
+            if x.size == 0:
+                return np.zeros((self.height, self.width), dtype=np.float32)
 
         # Vectorized accumulation via bincount
         frame = np.zeros((self.height * self.width,), dtype=np.float32)
@@ -583,11 +822,12 @@ class PolarityFrameAccumulator(FrameAccumulator):
         self.warned_already = False
         self.hot_pixels = hot_pixels
 
-        # --- NEW: optional GPU switch (off by default) and torch handle ---
-        self.use_gpu = True                    # set to True externally to enable GPU
+        self.use_gpu = True
         self._torch = None
         self._device = None
-        try:  # lazy import; no hard dependency
+        try:
+            import torch
+
             self._torch = torch
             if torch.cuda.is_available():
                 self._device = torch.device("cuda")
@@ -597,31 +837,14 @@ class PolarityFrameAccumulator(FrameAccumulator):
             self._torch = None
             self._device = None
         print(f"PolarityFrameAccumulator initialized. GPU support: {'yes' if self._torch is not None else 'no'}, device: {self._device}")
-        # Precompute hot-pixel linear indices for fast membership tests
-        if self.hot_pixels is not None:
-            hp = np.asarray(self.hot_pixels, dtype=np.int64)
-            # keep only those within bounds
-            inb = (hp[:,0] >= 0) & (hp[:,0] < self.width) & (hp[:,1] >= 0) & (hp[:,1] < self.height)
-            hp = hp[inb] if hp.size else hp
-            self._hot_lin_np = (hp[:,1] * self.width + hp[:,0]) if hp.size else np.empty((0,), dtype=np.int64)
-            print(f"Hot pixel filtering enabled: {len(self._hot_lin_np)} pixels will be excluded")
-        else:
-            self._hot_lin_np = None
+        self._hot_lin = _linear_hot_pixels(self.hot_pixels, self.width, self.height)
 
-    # (unchanged signature)
     def _filter_hot_pixels(self, x, y):
         """Return boolean mask of non-hot events (CPU path)."""
-        if self._hot_lin_np is None:
-            return np.ones(len(x), dtype=bool)
-        lin = (y.astype(np.int64) * self.width + x.astype(np.int64))
-        hot_mask = np.isin(lin, self._hot_lin_np, assume_unique=False)
-        self.total_hot_pixels_filtered += int(hot_mask.sum())
-        return ~hot_mask
+        return _hot_pixel_keep_mask(self, x, y, self._hot_lin)
 
-    # (unchanged signature)
     def accumulate_events(self, x, y, t, p, frame_start_time, frame_end_time):
         """Accumulate positive and negative events separately."""
-        # ---- TIME WINDOW ----
         time_mask = (t >= frame_start_time) & (t < frame_end_time)
         if not np.any(time_mask):
             return np.zeros((self.height, self.width, 2), dtype=np.float32)
@@ -639,11 +862,7 @@ class PolarityFrameAccumulator(FrameAccumulator):
             if len(x_filtered) == 0:
                 return np.zeros((self.height, self.width, 2), dtype=np.float32)
 
-        # ---- BOUNDS ----
-        valid_coords = (
-            (x_filtered >= 0) & (x_filtered < self.width) &
-            (y_filtered >= 0) & (y_filtered < self.height)
-        )
+        valid_coords = _valid_coord_mask(x_filtered, y_filtered, self.width, self.height)
         if not np.any(valid_coords):
             return np.zeros((self.height, self.width, 2), dtype=np.float32)
 
@@ -654,29 +873,17 @@ class PolarityFrameAccumulator(FrameAccumulator):
         # Track OOB once
         oob = ~valid_coords
         if np.any(oob):
-            self.total_out_of_bounds += int(np.sum(oob))
-            if not self.warned_already:
-                invalid_x = x_filtered[oob]
-                invalid_y = y_filtered[oob]
-                print("Warning: Found out-of-bounds events. Example ranges:")
-                print(f"  X range: {invalid_x.min()} - {invalid_x.max()} (valid: 0 - {self.width-1})")
-                print(f"  Y range: {invalid_y.min()} - {invalid_y.max()} (valid: 0 - {self.height-1})")
-                print("  Will continue counting but suppress further warnings...")
-                self.warned_already = True
+            _record_out_of_bounds(self, x_filtered, y_filtered, oob)
 
-        # ---- ACCUMULATE (GPU if enabled/available, else CPU) ----
         if self.use_gpu and self._torch is not None and self._device is not None:
             torch = self._torch
             with torch.no_grad():
-                # to device
                 x_t = torch.as_tensor(x_valid, device=self._device, dtype=torch.int64)
                 y_t = torch.as_tensor(y_valid, device=self._device, dtype=torch.int64)
                 p_t = torch.as_tensor(p_valid, device=self._device, dtype=torch.bool)
 
-                # linear indices
                 lin = y_t * self.width + x_t
 
-                # frame buffer: (2, H*W)
                 frame = torch.zeros((2, self.height * self.width), dtype=torch.float32, device=self._device)
 
                 if p_t.any():
@@ -686,10 +893,8 @@ class PolarityFrameAccumulator(FrameAccumulator):
                     neg_lin = lin[~p_t]
                     frame[1].index_add_(0, neg_lin, torch.ones_like(neg_lin, dtype=torch.float32))
 
-                # reshape to (H, W, 2) on CPU
                 return frame.view(2, self.height, self.width).permute(1, 2, 0).cpu().numpy()
 
-        # ---- CPU fallback (numpy) ----
         frame = np.zeros((self.height * self.width, 2), dtype=np.float32)
         lin = (y_valid.astype(np.int64) * self.width + x_valid.astype(np.int64))
         pos = (p_valid == True); neg = ~pos
@@ -726,32 +931,9 @@ class GeneralizedFrameBuilder:
         self.accumulator_type = accumulator_type
 
     # ---------- helpers: time scale detection & HDF5 field access ----------
+    @staticmethod
     def _parse_timestamp_val_to_scale(data_config):
-        """
-        Returns ticks-per-second from data_config['format']['data']['timestamp_val'].
-        Accepts: 'ns'|'us'|'ms'|'s' or a positive number (ticks/s).
-        """
-        val = (data_config.get('format', {})
-                        .get('data', {})
-                        .get('timestamp_val', None))
-        if val is None:
-            return None  # fall back to builder detection
-        if isinstance(val, str):
-            v = val.strip().lower()
-            if v in ('ns', 'nanosecond', 'nanoseconds'): return 1e9
-            if v in ('us', 'μs', 'microsecond', 'microseconds'): return 1e6
-            if v in ('ms', 'millisecond', 'milliseconds'): return 1e3
-            if v in ('s', 'sec', 'second', 'seconds'): return 1.0
-            # numeric string
-            try:
-                num = float(v)
-                if num > 0: return num
-            except Exception:
-                pass
-            raise ValueError(f"Unsupported timestamp_val='{val}'. Use ns/us/ms/s or numeric ticks/s.")
-        if isinstance(val, (int, float)) and val > 0:
-            return float(val)
-        raise ValueError(f"Invalid timestamp_val={val!r} (expected ns/us/ms/s or positive number)")
+        return parse_timestamp_val_to_scale(data_config)
 
     @staticmethod
     def _parse_unit_scale(attrs):
@@ -814,119 +996,14 @@ class GeneralizedFrameBuilder:
         while lo < hi:
             mid = (lo + hi) // 2
             tm = int(tds[mid])  # scalar read
-            if tm > target_tick or (side == "right" and tm == target_tick):
-                hi = mid
-            else:
+            if tm < target_tick or (side == "right" and tm == target_tick):
                 lo = mid + 1
+            else:
+                hi = mid
         return lo if side == "right" else lo
 
     def _fields_handles(self, ev):
-        """
-        Normalize an events container (group or dataset) to field handles:
-        returns (ds, n_total) with keys ds['t'], ds['x'], ds['y'], ds['p'] (p may be None).
-        Each ds[key] supports 1D indexing (cheap HDF5 reads), exposes .shape and .dtype.
-        """
-
-        # ---- helpers: lightweight 1D "views" that read slices lazily ----
-        class _ColView:
-            # for numeric NxC datasets (e.g., columns [x,y,t,(p)])
-            def __init__(self, base, col):
-                self._b, self._c = base, col
-            def __getitem__(self, idx):
-                return self._b[idx, self._c]
-            @property
-            def shape(self):
-                return (self._b.shape[0],)
-            @property
-            def dtype(self):
-                return self._b.dtype
-
-        class _FieldView:
-            # for compound dtype datasets (named fields)
-            def __init__(self, base, field):
-                self._b, self._f = base, field
-            def __getitem__(self, idx):
-                # reads only the requested slice, then selects the field
-                return self._b[idx][self._f]
-            @property
-            def shape(self):
-                return (self._b.shape[0],)
-            @property
-            def dtype(self):
-                return self._b.dtype[self._f]
-
-        def _first_present_key(grp, keys):
-            for k in keys:
-                if k in grp and isinstance(grp[k], h5py.Dataset):
-                    return k
-            return None
-
-        # ---- split layout: group with x/y/t(/p) datasets (accept aliases) ----
-        if isinstance(ev, h5py.Group):
-            tkey = _first_present_key(ev, EVENT_T_KEYS)
-            xkey = _first_present_key(ev, EVENT_X_KEYS)
-            ykey = _first_present_key(ev, EVENT_Y_KEYS)
-            pkey = _first_present_key(ev, EVENT_P_KEYS)
-
-            if not (tkey or xkey or ykey):
-                raise ValueError("events group has no recognizable t/x/y datasets (checked aliases).")
-
-            # Pick any present stream to determine length
-            probe = ev[tkey] if tkey else (ev[xkey] if xkey else ev[ykey])
-            n_total = int(probe.shape[0])
-
-            ds = {
-                "t": ev[tkey] if tkey else None,
-                "x": ev[xkey] if xkey else None,
-                "y": ev[ykey] if ykey else None,
-                "p": ev[pkey] if pkey else None,
-            }
-            return ds, n_total
-
-        # ---- packed layout: single dataset named 'events' (compound or Nx>=3) ----
-        if isinstance(ev, h5py.Dataset):
-            dset = ev
-            n_total = int(dset.shape[0])
-
-            # compound dtype with named fields
-            if dset.dtype.names:
-                names_lut = {n.lower(): n for n in dset.dtype.names}
-                def _field_name(aliases):
-                    for a in aliases:
-                        if a in names_lut:
-                            return names_lut[a]
-                    return None
-
-                t_field = _field_name(EVENT_T_KEYS)
-                x_field = _field_name(EVENT_X_KEYS)
-                y_field = _field_name(EVENT_Y_KEYS)
-                p_field = _field_name(EVENT_P_KEYS)
-
-                if not (t_field or x_field or y_field):
-                    raise ValueError("compound events dataset missing time/coords fields (checked aliases).")
-
-                ds = {
-                    "t": _FieldView(dset, t_field) if t_field else None,
-                    "x": _FieldView(dset, x_field) if x_field else None,
-                    "y": _FieldView(dset, y_field) if y_field else None,
-                    "p": _FieldView(dset, p_field) if p_field else None,
-                }
-                return ds, n_total
-
-            # plain numeric Nx>=3: assume columns [x,y,t,(p?)]
-            if dset.ndim == 2 and dset.shape[1] >= 3:
-                ds = {
-                    "x": _ColView(dset, 0),
-                    "y": _ColView(dset, 1),
-                    "t": _ColView(dset, 2),
-                    "p": _ColView(dset, 3) if dset.shape[1] > 3 else None,
-                }
-                return ds, n_total
-
-            raise ValueError("Unsupported events dataset shape; expected compound or numeric Nx>=3.")
-
-        # ---- fallback ----
-        raise TypeError(f"Unsupported /events node type: {type(ev)}")
+        return _event_field_handles(ev)
 
     
     def _append_metadata(self, output_dir, **updates):
@@ -946,7 +1023,7 @@ class GeneralizedFrameBuilder:
         Also records per-frame mid timestamps in ticks as 'event_frame_times_ticks.npy'.
         """
 
-        max_events = self.max_events
+        max_events = int(getattr(self.accumulator, "max_events", self.max_events))
         frame_shape = self.accumulator.get_frame_shape(self.width, self.height)
 
         # Infer channels from frame_shape (e.g., (H, W, 2) for polarity)
@@ -956,10 +1033,9 @@ class GeneralizedFrameBuilder:
             H, W = frame_shape
             C = 1
 
-        has_p = ("p" in ds)  # only needed if C > 1
+        has_p = ds.get("p") is not None
 
         hot_lin = getattr(self.accumulator, "_hot_lin", None)
-        warned  = bool(getattr(self.accumulator, "warned_already", False))
 
         def _flush(idx, frame_arr, t0_tick, t1_tick):
             np.save(os.path.join(output_dir, f"frame_{idx:06d}.npy"), frame_arr)
@@ -997,18 +1073,9 @@ class GeneralizedFrameBuilder:
                     p_chunk = ds["p"][idx:chunk_end]
 
                 # Validity check
-                valid = (x_chunk >= 0) & (x_chunk < self.width) & (y_chunk >= 0) & (y_chunk < self.height)
+                valid = _valid_coord_mask(x_chunk, y_chunk, self.width, self.height)
                 if not np.all(valid):
-                    bad = (~valid)
-                    self.accumulator.total_out_of_bounds += int(bad.sum())
-                    if not warned and bad.any():
-                        invx, invy = x_chunk[bad], y_chunk[bad]
-                        print("Warning: Found out-of-bounds events. Example ranges:")
-                        print(f"  X range: {invx.min()} - {invx.max()} (valid: 0 - {self.width-1})")
-                        print(f"  Y range: {invy.min()} - {invy.max()} (valid: 0 - {self.height-1})")
-                        print("  Will continue counting but suppress further warnings...")
-                        warned = True
-                        self.accumulator.warned_already = True
+                    _record_out_of_bounds(self.accumulator, x_chunk, y_chunk, ~valid)
 
                 if not np.any(valid):
                     idx = chunk_end
@@ -1021,14 +1088,7 @@ class GeneralizedFrameBuilder:
                     ps = p_chunk[valid]
 
                 lin = (ys.astype(np.int64) * self.width + xs.astype(np.int64))
-
-                # Hot-pixel filter (on linear index)
-                if hot_lin is not None and hot_lin.size:
-                    hot = np.isin(lin, hot_lin, assume_unique=False)
-                    self.accumulator.total_hot_pixels_filtered += int(hot.sum())
-                    keep_mask = ~hot
-                else:
-                    keep_mask = np.ones(lin.shape, dtype=bool)
+                keep_mask = _hot_pixel_keep_mask(self.accumulator, xs, ys, hot_lin)
 
                 if not keep_mask.any():
                     idx = chunk_end
@@ -1046,25 +1106,17 @@ class GeneralizedFrameBuilder:
                     use_lin = lin[keep_mask][:take_n]
                     use_ts  = ts[keep_mask][:take_n]
                     if C > 1:
-                        # Map polarity to channel index 0/1 robustly:
-                        # works for {0,1} or {-1,1} or {False,True}
                         use_ps_raw = ps[keep_mask][:take_n]
-                        use_pol = (use_ps_raw > 0).astype(np.int64)  # 1 for positive, 0 otherwise
+                        use_pos = use_ps_raw > 0
 
                     # accumulate counts
                     if C > 1:
-                        # Per-channel bincount and add into each channel plane
-                        # Channel 0 (negative/off or non-positive)
-                        mask0 = (use_pol == 0)
-                        if mask0.any():
-                            counts0 = np.bincount(use_lin[mask0], minlength=flat_size).astype(np.float32, copy=False)
-                            current_frame[..., 0] += counts0.reshape(H, W)
-
-                        # Channel 1 (positive/on)
-                        mask1 = (use_pol == 1)
-                        if mask1.any():
-                            counts1 = np.bincount(use_lin[mask1], minlength=flat_size).astype(np.float32, copy=False)
-                            current_frame[..., 1] += counts1.reshape(H, W)
+                        if use_pos.any():
+                            pos_counts = np.bincount(use_lin[use_pos], minlength=flat_size).astype(np.float32, copy=False)
+                            current_frame[..., 0] += pos_counts.reshape(H, W)
+                        if (~use_pos).any():
+                            neg_counts = np.bincount(use_lin[~use_pos], minlength=flat_size).astype(np.float32, copy=False)
+                            current_frame[..., 1] += neg_counts.reshape(H, W)
                     else:
                         counts = np.bincount(use_lin, minlength=flat_size).astype(np.float32, copy=False)
                         current_frame += counts.reshape(H, W)
@@ -1130,64 +1182,18 @@ class GeneralizedFrameBuilder:
         if self.accumulator_type != "eventcount":
             print(f"Requested time window: {timewindow_ns/1e6:.1f} ms")
 
-        def _any_present(ks, keys):
-            return any(k in ks for k in keys)
-
         with h5py.File(hdf5_path, "r", swmr=True,
                     rdcc_nbytes=rdcc_nbytes, rdcc_nslots=rdcc_nslots, rdcc_w0=0.0) as h5f:
 
-            # ---- resolve events node robustly (accept alias names) ----
-            ev = None
-            if "events" in h5f:
-                ev = h5f["events"]
-            elif "columns" in h5f:  # e.g. columns/{x,y,t,p}
-                ev = h5f["columns"]
-            else:
-                # try shallow groups first
-                for _, obj in h5f.items():
-                    if isinstance(obj, h5py.Group):
-                        ks = obj.keys()
-                        if (_any_present(ks, EVENT_X_KEYS)
-                            and _any_present(ks, EVENT_Y_KEYS)
-                            and _any_present(ks, EVENT_T_KEYS)):
-                            ev = obj
-                            break
-                # deep walk if still not found
-                if ev is None:
-                    def _visit(name, obj):
-                        nonlocal ev
-                        if ev is not None:
-                            return
-                        if isinstance(obj, h5py.Group):
-                            ks = obj.keys()
-                            if (_any_present(ks, EVENT_X_KEYS)
-                                and _any_present(ks, EVENT_Y_KEYS)
-                                and _any_present(ks, EVENT_T_KEYS)):
-                                ev = obj
-                        elif isinstance(obj, h5py.Dataset):
-                            # accept packed Nx>=3 "events" dataset somewhere in the tree
-                            if (name.endswith("/events") or name == "events") and obj.ndim == 2 and obj.shape[1] >= 3:
-                                ev = obj
-                    h5f.visititems(_visit)
-
-            if ev is None:
-                raise ValueError("No events found in HDF5 file (looked for '/events', '/columns', or any group with x,y,t/timestamp/timestamps).")
-
-            # ---- normalize fields (x,y,t[,p]) ----
+            ev = _locate_events_node(h5f)
             ds, n_total = self._fields_handles(ev)
 
-            # normalize time key → ds["t"] (accept aliases)
-            if ds.get("t") is None:
-                for alt in ("timestamp", "timestamps", "time", "times"):
-                    if ds.get(alt) is not None:
-                        ds["t"] = ds[alt]
-                        break
             if ds.get("t") is None:
                 raise ValueError("Timestamps not found in events (expected one of t/timestamp/timestamps/time).")
-
-            # ensure coords exist (both are required downstream)
             if ds.get("x") is None or ds.get("y") is None:
                 raise ValueError("Events missing x/y coordinate fields (checked aliases).")
+            if self.accumulator_type == "polarity" and ds.get("p") is None:
+                raise ValueError("Polarity frame accumulation requires a polarity field (checked p/polarity aliases).")
 
             # ---- Detect scale (ticks/sec) and convert offset ----
             if time_scale is None:
@@ -1219,20 +1225,7 @@ class GeneralizedFrameBuilder:
             #   EVENTCOUNT MODE BRANCH
             # =========================
             if self.accumulator_type == "eventcount":
-                # Coerce to a real int scalar no matter what came in
-                def _to_int_scalar(v, default=50_000):
-                    if v is None:
-                        return int(default)
-                    if isinstance(v, (int, np.integer)):
-                        return int(v)
-                    a = np.asarray(v)
-                    if a.shape == ():
-                        return int(a.item())
-                    if a.size == 1:
-                        return int(a.reshape(()).item())
-                    raise ValueError(f"max_events_per_frame must be scalar; got shape {a.shape}")
-
-                max_ev = max_events
+                max_ev = max_events if max_events is not None else self.accumulator.max_events
 
                 print(f"Total events (file): {n_total:,}")
                 print("Processing by max events/frame (no fixed time window).")
@@ -1427,46 +1420,6 @@ class GeneralizedFrameBuilder:
                 pbar.update(1)
                 current_frame_idx += 1
                 current_frame = np.zeros(frame_shape, dtype=np.float32)
-    
-    def _accumulate_frame_streaming(self, events_group, frame_start_time, 
-                                  frame_end_time, chunk_size, initial_frame):
-        """Accumulate events for a single frame using streaming"""
-        
-        total_events = events_group['x'].shape[0]
-        
-        # Find approximate start and end indices using binary search
-        timestamps = events_group['t']
-        
-        # Use binary search to find relevant time range
-        start_idx = np.searchsorted(timestamps, frame_start_time)
-        end_idx = np.searchsorted(timestamps, frame_end_time)
-        
-        # Add some buffer to account for chunking
-        start_idx = max(0, start_idx - chunk_size)
-        end_idx = min(total_events, end_idx + chunk_size)
-        
-        # Process in chunks
-        current_frame = initial_frame.copy()
-        
-        for chunk_start in range(start_idx, end_idx, chunk_size):
-            chunk_end = min(chunk_start + chunk_size, end_idx)
-            
-            # Load chunk
-            x_chunk = events_group['x'][chunk_start:chunk_end]
-            y_chunk = events_group['y'][chunk_start:chunk_end]
-            t_chunk = events_group['t'][chunk_start:chunk_end]
-            p_chunk = events_group['p'][chunk_start:chunk_end]
-            
-            # Accumulate events in this chunk
-            chunk_frame = self.accumulator.accumulate_events(
-                x_chunk, y_chunk, t_chunk, p_chunk, 
-                frame_start_time, frame_end_time
-            )
-            
-            # Add to current frame
-            current_frame += chunk_frame
-        
-        return current_frame
 
     def _create_metadata_file(self, output_dir, timewindow_ns, start_time, total_frames, width, height):
         metadata = {
@@ -1513,6 +1466,8 @@ class GeneralizedFrameBuilder:
     def _save_frame_preview(self, frame, output_dir, frame_idx):
         """Save a preview image of the frame"""
         try:
+            import matplotlib.pyplot as plt
+
             plt.figure(figsize=(8, 6))
 
             if frame.ndim == 2:
@@ -1644,266 +1599,57 @@ class E2VIDReconstructor:
         Timestamps in HDF5 may be ns/us/ms/seconds. We detect units from the
         median positive time delta and output seconds starting at 0.0.
         """
-        # ---- helpers ------------------------------------------------------------
-        def _pick_key(grp, keys):
-            for k in keys:
-                if k in grp and isinstance(grp[k], h5py.Dataset):
-                    return k
-            return None
-
-        def _any_present(ks, keys):
-            return any(k in ks for k in keys)
-
-        EVENT_T_KEYS = ("t", "timestamp", "timestamps", "time", "times")
-        EVENT_X_KEYS = ("x", "x_coordinate", "x_coordinates", "u", "col", "column")
-        EVENT_Y_KEYS = ("y", "y_coordinate", "y_coordinates", "v", "row")
-        EVENT_P_KEYS = ("p", "polarity", "polarities", "pol", "polarity_bit", "polarity_bits")
-
-        def _median_dt_from_dataset(t_ds, sample=200_000) -> float:
-            """Return median positive tick difference from a 1-D HDF5 dataset."""
-            n = int(t_ds.shape[0])
-            if n <= 2:
-                return 0.0
-            step = max(1, n // sample)
-            t = np.array(t_ds[::step])
-            dt = np.diff(t)
-            dt = dt[dt > 0]
-            return float(np.median(dt)) if dt.size else 0.0
-
-        def _infer_seconds_per_tick(t_ds, sample=200_000) -> float:
-            """
-            Infer seconds-per-tick from the magnitude of dt and overall span.
-            Works for int or float timestamp datasets.
-            """
-            n = int(t_ds.shape[0])
-            if n < 3:
-                return 1.0
-
-            step = max(1, n // sample)
-            t = np.asarray(t_ds[::step], dtype=np.float64)
-
-            # ensure monotonic-ish sampling
-            dt = np.diff(t)
-            dt_pos = dt[dt > 0]
-            if dt_pos.size == 0:
-                return 1.0
-
-            dt_med = float(np.median(dt_pos))
-            span = float(t[-1] - t[0])
-
-            # If it already looks like seconds (microsecond-ish deltas, span ~ a few seconds/minutes)
-            # Typical event dt in seconds is often <1e-3.
-            if dt_med < 1e-3:
-                return 1.0
-
-            # Now we assume raw units are larger-than-seconds ticks: ms/us/ns.
-            # Use span to disambiguate (much more stable than dt alone).
-            # Example: 60 seconds clip:
-            #   span ~ 60        -> seconds
-            #   span ~ 60,000    -> ms
-            #   span ~ 60,000,000 -> us
-            #   span ~ 60,000,000,000 -> ns
-            if span > 1e11:
-                return 1e-9   # nanoseconds
-            if span > 1e8:
-                return 1e-6   # microseconds
-            if span > 1e5:
-                return 1e-3   # milliseconds
-
-            # Ambiguous short spans: fall back to dt magnitude
-            # If dt_med is like 1..20, it's very likely ms ticks.
-            if 1.0 <= dt_med <= 50.0:
-                return 1e-3
-            if 50.0 < dt_med <= 50_000.0:
-                return 1e-6
-            if dt_med > 50_000.0:
-                return 1e-9
-
-            return 1.0
-
-        # ---- event dataset/group discovery -------------------------------------
         print("Preparing event data for E2VID...")
         self.hdf5_path = hdf5_path
 
-        def _locate_events(h5f):
-            """Return either an events Group (with columns) or a Dataset (Nx>=3)."""
-            events = None
-            # obvious names first
-            if 'events' in h5f:
-                events = h5f['events']
-            elif 'columns' in h5f:
-                events = h5f['columns']
-            elif 'data' in h5f:
-                events = h5f['data']
-
-            # shallow search if still not found
-            if events is None:
-                for _, obj in h5f.items():
-                    if isinstance(obj, h5py.Group):
-                        ks = obj.keys()
-                        if (_any_present(ks, EVENT_X_KEYS)
-                            and _any_present(ks, EVENT_Y_KEYS)
-                            and _any_present(ks, EVENT_T_KEYS)):
-                            events = obj
-                            break
-
-            # deep search
-            if events is None:
-                def _visit(name, obj):
-                    nonlocal events
-                    if events is not None:
-                        return
-                    if isinstance(obj, h5py.Group):
-                        ks = obj.keys()
-                        if (_any_present(ks, EVENT_X_KEYS)
-                            and _any_present(ks, EVENT_Y_KEYS)
-                            and _any_present(ks, EVENT_T_KEYS)):
-                            events = obj
-                    elif isinstance(obj, h5py.Dataset):
-                        if (name.endswith("/events") or name == "events") and obj.ndim == 2 and obj.shape[1] >= 3:
-                            events = obj
-                h5f.visititems(_visit)
-
-            if events is None:
-                raise ValueError("Could not locate an events dataset/group in the HDF5.")
-            return events
-
-        # === If a text already exists, compute and return its zero-point in ns ===
-        if os.path.exists(output_txt_path):
-            print(f"Event text file already exists: {output_txt_path}")
-            with h5py.File(hdf5_path, 'r') as h5f:
-                events = _locate_events(h5f)
-
-                if isinstance(events, h5py.Group):
-                    t_key = _pick_key(events, EVENT_T_KEYS)
-                    if not t_key:
-                        raise ValueError("Events group has no time dataset.")
-                    t_ds = events[t_key]
-                    dt_med = _median_dt_from_dataset(t_ds)
-                    s_per_tick = _infer_seconds_per_tick(t_ds)
-                    print(f"[t] dtype={t_ds.dtype} t0={float(t_ds[0])} t1={float(t_ds[1])} "
-                        f"dt_med={dt_med} inferred_s_per_tick={s_per_tick}")
-                    # unit detection
-                    t0_raw = float(t_ds[0])
-                else:
-                    # compound Nx>=3 dataset; assume column 2 is time if unnamed
-                    if events.dtype.names:
-                        names = [n.lower() for n in events.dtype.names]
-                        try:
-                            idx_t = next(i for i,nm in enumerate(names) if nm in EVENT_T_KEYS)
-                        except StopIteration:
-                            idx_t = 2
-                    else:
-                        idx_t = 2
-                    n = int(events.shape[0])
-                    if n == 0:
-                        raise ValueError("No events in dataset.")
-                    t0_raw = float(events[0, idx_t])
-                    s_per_tick = _infer_seconds_per_tick(t_ds)
-
-                start_time_s = t0_raw * s_per_tick
-                if offset_ns:
-                    start_time_s = max(start_time_s, float(offset_ns) * 1e-9)
-                start_time_ns = int(round(start_time_s * 1e9))
-            return start_time_ns
-
-        # === Otherwise, export a new text file ==================================
         with h5py.File(hdf5_path, 'r') as h5f:
-            events = _locate_events(h5f)
+            events = _locate_events_node(h5f, include_data=True)
+            ds, n = _event_field_handles(events)
 
-            # --- Group of column datasets ---
-            if isinstance(events, h5py.Group):
-                t_key = _pick_key(events, EVENT_T_KEYS)
-                x_key = _pick_key(events, EVENT_X_KEYS)
-                y_key = _pick_key(events, EVENT_Y_KEYS)
-                p_key = _pick_key(events, EVENT_P_KEYS)  # optional
+            if ds.get("t") is None or ds.get("x") is None or ds.get("y") is None:
+                raise ValueError("Events missing t/x/y fields required for E2VID export.")
+            if n == 0:
+                raise ValueError("No events in dataset.")
 
-                if not (t_key and x_key and y_key):
-                    raise ValueError(f"Missing datasets in events group. "
-                                    f"Found: t={t_key}, x={x_key}, y={y_key}, p={p_key}")
+            t_ds = ds["t"]
+            x_ds = ds["x"]
+            y_ds = ds["y"]
+            p_ds = ds["p"]
 
-                t_ds = events[t_key]; x_ds = events[x_key]; y_ds = events[y_key]
-                p_ds = events[p_key] if p_key else None
+            s_per_tick = _infer_seconds_per_tick(t_ds)
+            t0_raw = float(t_ds[0])
+            start_time_s = t0_raw * s_per_tick
+            if offset_ns:
+                start_time_s = max(start_time_s, float(offset_ns) * 1e-9)
 
-                n = int(t_ds.shape[0])
-                if n == 0:
-                    raise ValueError("No events in datasets.")
+            start_time_ns = int(round(start_time_s * 1e9))
 
-                # unit detection
-                s_per_tick = _infer_seconds_per_tick(t_ds)
-                t0_raw = float(t_ds[0])
-                start_time_s = t0_raw * s_per_tick
-
-                if offset_ns:
-                    start_time_s = max(start_time_s, float(offset_ns) * 1e-9)
-
-                with open(output_txt_path, 'w') as f:
-                    f.write(f"{self.width} {self.height}\n")
-                    CHUNK = 2_000_000
-                    for i0 in tqdm(range(0, n, CHUNK), desc="Exporting events"):
-                        i1 = min(n, i0 + CHUNK)
-                        t = np.asarray(t_ds[i0:i1], dtype=np.float64) * s_per_tick
-                        x = np.asarray(x_ds[i0:i1], dtype=np.int32)
-                        y = np.asarray(y_ds[i0:i1], dtype=np.int32)
-                        if p_ds is not None:
-                            p = np.asarray(p_ds[i0:i1])
-                            p = (p.astype(np.int8) > 0).astype(np.uint8) if p.dtype != np.bool_ else p.astype(np.uint8)
-                        else:
-                            p = np.zeros_like(x, dtype=np.uint8)
-
-                        t -= start_time_s
-                        for ti, xi, yi, pi in zip(t, x, y, p):
-                            f.write(f"{ti:.9f} {int(xi)} {int(yi)} {int(pi)}\n")
-
-                start_time_ns = int(round(start_time_s * 1e9))
+            if os.path.exists(output_txt_path):
+                print(f"Event text file already exists: {output_txt_path}")
+                dt_med = _median_dt_from_times(t_ds)
+                t1_raw = float(t_ds[1]) if n > 1 else t0_raw
+                print(f"[t] dtype={t_ds.dtype} t0={t0_raw} t1={t1_raw} "
+                      f"dt_med={dt_med} inferred_s_per_tick={s_per_tick}")
                 return start_time_ns
 
-            # --- Compound Nx>=3 dataset (e.g., columns packed into one 'events') ---
-            else:
-                n = int(events.shape[0])
-                if n == 0:
-                    raise ValueError("No events in dataset.")
+            with open(output_txt_path, 'w') as f:
+                f.write(f"{self.width} {self.height}\n")
+                chunk_size = 2_000_000
+                for i0 in tqdm(range(0, n, chunk_size), desc="Exporting events"):
+                    i1 = min(n, i0 + chunk_size)
+                    t = np.asarray(t_ds[i0:i1], dtype=np.float64) * s_per_tick
+                    x = np.asarray(x_ds[i0:i1], dtype=np.int32)
+                    y = np.asarray(y_ds[i0:i1], dtype=np.int32)
+                    if p_ds is None:
+                        p = np.zeros_like(x, dtype=np.uint8)
+                    else:
+                        p = (np.asarray(p_ds[i0:i1]) > 0).astype(np.uint8)
 
-                # column indices (prefer names)
-                if events.dtype.names:
-                    names = [n.lower() for n in events.dtype.names]
-                    idx_t = next((i for i,nm in enumerate(names) if nm in EVENT_T_KEYS), 2)
-                    idx_x = next((i for i,nm in enumerate(names) if nm in EVENT_X_KEYS), 0)
-                    idx_y = next((i for i,nm in enumerate(names) if nm in EVENT_Y_KEYS), 1)
-                    idx_p = next((i for i,nm in enumerate(names) if nm in EVENT_P_KEYS), None)
-                else:
-                    idx_x, idx_y, idx_t = 0, 1, 2
-                    idx_p = 3 if events.shape[1] > 3 else None
+                    t -= start_time_s
+                    for ti, xi, yi, pi in zip(t, x, y, p):
+                        f.write(f"{ti:.9f} {int(xi)} {int(yi)} {int(pi)}\n")
 
-                # unit detection
-                s_per_tick = _infer_seconds_per_tick(t_ds)
-
-                t0_raw = float(events[0, idx_t])
-                start_time_s = t0_raw * s_per_tick
-                if offset_ns:
-                    start_time_s = max(start_time_s, float(offset_ns) * 1e-9)
-
-                with open(output_txt_path, 'w') as f:
-                    f.write(f"{self.width} {self.height}\n")
-                    CHUNK = 2_000_000
-                    for i0 in tqdm(range(0, n, CHUNK), desc="Exporting events"):
-                        i1 = min(n, i0 + CHUNK)
-                        chunk = events[i0:i1]
-                        t = np.asarray(chunk[:, idx_t], dtype=np.float64) * s_per_tick
-                        x = np.asarray(chunk[:, idx_x], dtype=np.int32)
-                        y = np.asarray(chunk[:, idx_y], dtype=np.int32)
-                        if idx_p is not None:
-                            p = np.asarray(chunk[:, idx_p])
-                            p = (p.astype(np.int8) > 0).astype(np.uint8) if p.dtype != np.bool_ else p.astype(np.uint8)
-                        else:
-                            p = np.zeros_like(x, dtype=np.uint8)
-
-                        t -= start_time_s
-                        for ti, xi, yi, pi in zip(t, x, y, p):
-                            f.write(f"{ti:.9f} {int(xi)} {int(yi)} {int(pi)}\n")
-
-                start_time_ns = int(round(start_time_s * 1e9))
-                return start_time_ns
+            return start_time_ns
 
     def _run_e2vid_reconstruction(self, event_file_path, output_dir, timewindow_ms):
         """
@@ -1963,19 +1709,23 @@ class E2VIDReconstructor:
 
         for i, img_name in enumerate(tqdm(image_files, desc="Saving frames")):
             img_path = os.path.join(reconstruction_dir, img_name)
-            # E2VID output is typically grayscale, so we read it as such
             try:
-                frame = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
-                frame = frame.astype(np.float32) / 255.0 # Normalize to [0, 1]
-            except ImportError:
-                frame = np.array(Image.open(img_path).convert('L')).astype(np.float32) / 255.0
+                import cv2
 
+                frame = cv2.imread(img_path, cv2.IMREAD_GRAYSCALE)
+                if frame is None:
+                    raise ValueError(f"Could not read reconstructed image: {img_path}")
+                frame = frame.astype(np.float32) / 255.0
+            except ImportError:
+                from PIL import Image
+
+                frame = np.array(Image.open(img_path).convert('L')).astype(np.float32) / 255.0
 
             frame_filename = f"frame_{i:06d}.npy"
             frame_path = os.path.join(final_output_dir, frame_filename)
             np.save(frame_path, frame)
 
-    def _create_metadata_file(self, output_dir, timewindow_ns, start_time_ns, total_frames):
+    def _create_metadata_file(self, output_dir, timewindow_ms, start_time_ns, total_frames):
         """
         Creates a metadata file for the reconstructed frames.
         """
@@ -1984,8 +1734,8 @@ class E2VIDReconstructor:
             num_frames = len([f for f in os.listdir(output_dir) if f.startswith('frame_') and f.endswith('.npy')])
 
         metadata = {
-            'timewindow_ns': int(timewindow_ns),
-            'timewindow_ms': float(timewindow_ns / 1e6),
+            'timewindow_ns': int(timewindow_ms * 1e6),
+            'timewindow_ms': float(timewindow_ms),
             'start_time_ns': int(start_time_ns),
             'total_frames': int(num_frames),
             'width': int(self.width),
@@ -2015,45 +1765,9 @@ def build_event_frames(hdf5_path, config, data_config, sequence_name, timewindow
         frames_dir: Output directory for frames
         hot_pixels: Array of (x, y) coordinates to exclude (None = auto-load from file)
     """
-    
-    print(f"Debug: build_event_frames called with hot_pixels type = {type(hot_pixels)}")
-    if hot_pixels is not None:
-        print(f"Debug: hot_pixels length = {len(hot_pixels) if hasattr(hot_pixels, '__len__') else 'no len'}")
-    
-    print(f"Debug: Final hot_pixels type = {type(hot_pixels)}")
-    
-    # Get parameters from config
     timewindow_ms = timewindow
     timewindow_ns = int(timewindow_ms * 1e6)
-    def _parse_timestamp_val_to_scale(data_config):
-        """
-        Returns ticks-per-second from data_config['format']['data']['timestamp_val'].
-        Accepts: 'ns'|'us'|'ms'|'s' or a positive number (ticks/s).
-        """
-        val = (data_config.get('format', {})
-                        .get('data', {})
-                        .get('timestamp_val', None))
-        if val is None:
-            return None  # fall back to builder detection
-        if isinstance(val, str):
-            v = val.strip().lower()
-            if v in ('ns', 'nanosecond', 'nanoseconds'): return 1e9
-            if v in ('us', 'μs', 'microsecond', 'microseconds'): return 1e6
-            if v in ('ms', 'millisecond', 'milliseconds'): return 1e3
-            if v in ('s', 'sec', 'second', 'seconds'): return 1.0
-            # numeric string
-            try:
-                num = float(v)
-                if num > 0: return num
-            except Exception:
-                pass
-            raise ValueError(f"Unsupported timestamp_val='{val}'. Use ns/us/ms/s or numeric ticks/s.")
-        if isinstance(val, (int, float)) and val > 0:
-            return float(val)
-        raise ValueError(f"Invalid timestamp_val={val!r} (expected ns/us/ms/s or positive number)")
 
-    
-    # Get offset for this sequence
     offset_sec = None
     if ('other' in data_config and 'offset' in data_config['other'] 
         and sequence_name in data_config['other']['offset']):
@@ -2062,24 +1776,32 @@ def build_event_frames(hdf5_path, config, data_config, sequence_name, timewindow
     else:
         offset_ns = None
     
-    # Get accumulator type from config
-    if config['frame_generator'] == 'frames':
-        accumulator_type = config.get('frame_accumulator', 'count')
-        
+    frame_generator = config.get('frame_generator', 'frames')
+
+    if frame_generator in ('frames', 'eventcount'):
+        if frame_generator == 'eventcount':
+            accumulator_type = 'eventcount'
+        else:
+            accumulator_type = config.get('frame_accumulator', accumulator_type or 'count')
+
         print(f"Building frames for sequence: {sequence_name}")
-        if offset_sec:
+        if offset_sec is not None:
             print(f"Using offset: {offset_sec} seconds")
         if hot_pixels is not None:
             print(f"Hot pixel filtering: {len(hot_pixels)} pixels will be excluded")
 
-        scale_override = _parse_timestamp_val_to_scale(data_config)
-        # Create frame builder with hot pixels
-        if config['frame_accumulator'] == 'eventcount':
-            builder = GeneralizedFrameBuilder(width, height, accumulator_type, max_events_per_frame=max_events, hot_pixels=hot_pixels)
-        else:
-            builder = GeneralizedFrameBuilder(width, height, accumulator_type, hot_pixels)
-        
-        # Build frames
+        max_events_per_frame = max_events
+        if accumulator_type == 'eventcount' and max_events_per_frame is None:
+            max_events_per_frame = config.get('max_events_per_frame', None)
+
+        builder = GeneralizedFrameBuilder(
+            width=width,
+            height=height,
+            accumulator_type=accumulator_type,
+            max_events_per_frame=max_events_per_frame,
+            hot_pixels=hot_pixels,
+        )
+
         builder.build_frames(
             hdf5_path=hdf5_path,
             output_dir=frames_dir,
@@ -2087,40 +1809,15 @@ def build_event_frames(hdf5_path, config, data_config, sequence_name, timewindow
             offset_ns=offset_ns,
             chunk_size=config.get('chunk_size', 100000),
             max_frames=config.get('max_frames', None),
-            time_scale=scale_override,          # <-- force the unit if provided
-            max_events=max_events
+            time_scale=parse_timestamp_val_to_scale(data_config),
+            max_events=max_events_per_frame,
         )
-    elif config['frame_generator'] == 'frames' and config['frame_generator'] == 'eventcount':
-        accumulator_type = config.get('frame_accumulator', 'count')
-        
-        print(f"Building frames for sequence: {sequence_name}")
-        if offset_sec:
-            print(f"Using offset: {offset_sec} seconds")
-        if hot_pixels is not None:
-            print(f"Hot pixel filtering: {len(hot_pixels)} pixels will be excluded")
-
-        scale_override = _parse_timestamp_val_to_scale(data_config)
-        # Create frame builder with hot pixels
-        builder = GeneralizedFrameBuilder(width, height, accumulator_type, max_events_per_frame=config.get('max_events_per_frame', 25000), hot_pixels=hot_pixels)
-
-        # Build frames
-        builder.build_frames(
-            hdf5_path=hdf5_path,
-            output_dir=frames_dir,
-            timewindow_ns=timewindow_ns,
-            offset_ns=offset_ns,
-            chunk_size=config.get('chunk_size', 100000),
-            max_events=max_events,
-            time_scale=scale_override,          # <-- force the unit if provided
-        )
-    else: # running the reconstructor
-        # ensure the e2vid repo exists
+    else:
         if not os.path.exists('./datasets/rpg_e2vid'):
             e2vid_url = "https://github.com/uzh-rpg/rpg_e2vid.git"
             print(f"Cloning e2vid repository from {e2vid_url}...")
             subprocess.run(['git', 'clone', e2vid_url, './datasets/rpg_e2vid'], check=True)
 
-            # Get the pre-trained model
             if config.get('reconstruction_model', 'e2vid') == 'firenet':
                 model_url = "https://drive.usercontent.google.com/u/0/uc?id=1Uqj8z8pDnq78JzoXdw-6radw3RPAyUPb&export=download"
             else:
@@ -2128,10 +1825,10 @@ def build_event_frames(hdf5_path, config, data_config, sequence_name, timewindow
             model_path = f"./datasets/rpg_e2vid/model/E2VID_{config['reconstruction_model']}.pth.tar"
             print(f"Downloading pre-trained model from {model_url}...")
             os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            requests.get(model_url, allow_redirects=True)
+            response = requests.get(model_url, allow_redirects=True)
+            response.raise_for_status()
             with open(model_path, 'wb') as f:
-                f.write(requests.get(model_url).content)
-
+                f.write(response.content)
 
         builder = E2VIDReconstructor(
             width=width,
@@ -2148,7 +1845,7 @@ def build_event_frames(hdf5_path, config, data_config, sequence_name, timewindow
             sequence_name,
             hdf5_path=hdf5_path,
             output_dir=frames_dir,
-            timewindow_ms=timewindow_ms,   # <-- ms, not mislabeled as ns
+            timewindow_ms=timewindow_ms,
             offset_ns=offset_ns,
             max_frames=config.get('max_frames', None)
         )

@@ -6,7 +6,7 @@ baselines/pytorch-NetVlad/
 baselines/vpr_sparse_event/
 baselines/LENS/
 baselines/ensemble/
-baselines/vprmethods/
+baselines/vpr_methods/
 
 # Dataset directories
 datasets/__pycache__/
