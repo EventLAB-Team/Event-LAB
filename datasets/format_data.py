@@ -4,19 +4,241 @@
 import glob
 import json
 import os
+import re
 import subprocess
+import time
+import torch
 from abc import ABC, abstractmethod
 
 import h5py
 import numpy as np
 import requests
 from tqdm import tqdm
+from typing import Optional, Tuple
+from pathlib import Path
 
 EVENT_T_KEYS = ("t", "timestamp", "timestamps", "time", "times")
 EVENT_X_KEYS = ("x", "x_coordinate", "x_coordinates", "u", "col", "column")
 EVENT_Y_KEYS = ("y", "y_coordinate", "y_coordinates", "v", "row")
 EVENT_P_KEYS = ("p", "polarity", "polarities", "pol", "polarity_bit", "polarity_bits")
+FRAME_NPY_RE = re.compile(r"^frame_(\d+)\.npy$")
 
+def _find_first_dataset(g: h5py.Group, candidates: tuple[str, ...], logical_name: str):
+    for key in candidates:
+        if key in g and isinstance(g[key], h5py.Dataset):
+            return g[key]
+    for _, obj in g.items():
+        if isinstance(obj, h5py.Group):
+            try:
+                return _find_first_dataset(obj, candidates, logical_name)
+            except RuntimeError:
+                pass
+    raise RuntimeError(
+        f"Could not find {logical_name} dataset under group '{g.name}'. "
+        f"Tried names: {', '.join(candidates)}"
+    )
+
+def find_event_datasets(f: h5py.File):
+    g = f["events"] if ("events" in f and isinstance(f["events"], h5py.Group)) else f
+    x_ds = _find_first_dataset(g, EVENT_X_KEYS, "x")
+    y_ds = _find_first_dataset(g, EVENT_Y_KEYS, "y")
+    t_ds = _find_first_dataset(g, EVENT_T_KEYS, "t")
+    p_ds = _find_first_dataset(g, EVENT_P_KEYS, "p")
+    return x_ds, y_ds, t_ds, p_ds
+
+def sec_to_raw(t_sec: float, time_scale: float) -> int:
+    return int(round(float(t_sec) / float(time_scale)))
+
+def raw_to_sec(t_raw: int, time_scale: float) -> float:
+    return float(t_raw) * float(time_scale)
+
+def stream_event_windows_raw(
+    hdf5_path: Path,
+    dt_ms: float,
+    chunk_size: int,
+    time_scale: float,
+    start_time_sec: Optional[float],
+    skip: Optional[int] = None
+):
+    """
+    Stream raw event windows from disk.
+
+    Note: this borrowed low-level helper expects ``time_scale`` to be seconds
+    per raw timestamp tick. GeneralizedFrameBuilder accepts either this value
+    or the repo's usual ticks-per-second value and normalizes it before calling
+    into this function.
+    """
+    with h5py.File(hdf5_path, "r") as f:
+        x_dset, y_dset, t_dset, p_dset = find_event_datasets(f)
+        N = len(t_dset)
+
+        if N == 0:
+            return
+
+        dt_raw = int(round((dt_ms / 1000.0) / float(time_scale)))
+
+        if dt_raw <= 0:
+            raise ValueError(f"dt_ms too small for time_scale (dt_raw={dt_raw})")
+
+        t0_raw = int(t_dset[0])
+        tN_raw = int(t_dset[N - 1])
+
+        if start_time_sec is None:
+            w_start_raw = t0_raw
+        else:
+            w_start_raw = max(sec_to_raw(start_time_sec, time_scale), t0_raw)
+
+        if w_start_raw >= tN_raw:
+            print(f"Warning: stream start is beyond event file end (start_raw={w_start_raw}, file_end_raw={tN_raw})")
+            return
+
+        x_buf = np.empty(0, dtype=np.int64)
+        y_buf = np.empty(0, dtype=np.int64)
+        t_buf = np.empty(0, dtype=np.int64)
+        p_buf = np.empty(0, dtype=np.int8)
+
+        read_idx = 0
+        frame_idx = 0
+        t_buf_max = -1
+
+        while w_start_raw < tN_raw:
+            w_end_raw = w_start_raw + dt_raw
+            t_read0 = time.perf_counter()
+
+            accum_x, accum_y, accum_t, accum_p = [], [], [], []
+
+            if t_buf.size > 0:
+                accum_x.append(x_buf)
+                accum_y.append(y_buf)
+                accum_t.append(t_buf)
+                accum_p.append(p_buf)
+                t_buf_max = int(t_buf[-1])
+
+            while read_idx < N and (t_buf_max < w_end_raw):
+                end_idx = min(N, read_idx + chunk_size)
+                t_chunk = t_dset[read_idx:end_idx].astype(np.int64, copy=False)
+
+                if t_chunk.size > 0:
+                    x_chunk = x_dset[read_idx:end_idx].astype(np.int64, copy=False)
+                    y_chunk = y_dset[read_idx:end_idx].astype(np.int64, copy=False)
+                    p_chunk = p_dset[read_idx:end_idx].astype(np.int8, copy=False)
+
+                    accum_x.append(x_chunk)
+                    accum_y.append(y_chunk)
+                    accum_t.append(t_chunk)
+                    accum_p.append(p_chunk)
+                    t_buf_max = int(t_chunk[-1])
+
+                read_idx = end_idx
+
+            if accum_t:
+                x_buf = np.concatenate(accum_x)
+                y_buf = np.concatenate(accum_y)
+                t_buf = np.concatenate(accum_t)
+                p_buf = np.concatenate(accum_p)
+            else:
+                x_buf = np.empty(0, dtype=np.int64)
+                y_buf = np.empty(0, dtype=np.int64)
+                t_buf = np.empty(0, dtype=np.int64)
+                p_buf = np.empty(0, dtype=np.int8)
+
+            if t_buf.size:
+                in_win = (t_buf >= w_start_raw) & (t_buf < w_end_raw)
+                x_win = x_buf[in_win]
+                y_win = y_buf[in_win]
+                t_win_raw = t_buf[in_win]
+                p_win = p_buf[in_win]
+
+                leftover = t_buf >= w_end_raw
+                x_buf, y_buf, t_buf, p_buf = x_buf[leftover], y_buf[leftover], t_buf[leftover], p_buf[leftover]
+                t_buf_max = int(t_buf[-1]) if t_buf.size > 0 else -1
+            else:
+                x_win = np.empty(0, dtype=np.int64)
+                y_win = np.empty(0, dtype=np.int64)
+                t_win_raw = np.empty(0, dtype=np.int64)
+                p_win = np.empty(0, dtype=np.int8)
+
+            t_read1 = time.perf_counter()
+            t_read_ms = (t_read1 - t_read0) * 1000.0
+
+            if skip is None or skip <= 1 or frame_idx % skip == 0:
+                yield (
+                    raw_to_sec(w_start_raw, time_scale),
+                    raw_to_sec(w_end_raw, time_scale),
+                    w_end_raw,
+                    x_win, y_win, t_win_raw, p_win,
+                    frame_idx,
+                    t_read_ms,
+                )
+
+            w_start_raw = w_end_raw
+            frame_idx += 1
+
+            if read_idx >= N and t_buf.size == 0 and t_buf_max < w_start_raw:
+                break
+
+@torch.no_grad()
+def gpu_polarity_frame_1ch(
+    x, y, p,
+    H: int, W: int, device: torch.device
+) -> Tuple[torch.Tensor, int]:
+
+    # KEY FIX: keep p as-is, then promote safely before >0
+    if p.dtype in (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64):
+        p_cmp = p.to(torch.int16)   # prevents uint8 255 -> int8 -1 wrap
+    else:
+        p_cmp = p
+
+    valid = (x >= 0) & (x < W) & (y >= 0) & (y < H)
+    if not torch.any(valid):
+        return torch.zeros((2, H, W), device=device, dtype=torch.float32), 0
+
+    x = x[valid]; y = y[valid]; p_cmp = p_cmp[valid]
+    n_valid = int(x.numel())
+
+    flat = H * W
+    lin = y * W + x
+    ch = (p_cmp > 0).to(torch.int64)
+
+    idx = lin + ch * flat
+
+    counts = torch.bincount(idx, minlength=2 * flat).to(torch.float32)
+    frame = counts.view(2, flat).view(2, H, W)
+
+    # flatten 1st and 2nd channelsums into single channel (polarity-agnostic)
+    frame = frame.sum(dim=0, keepdim=True)
+
+    return frame, n_valid
+
+@torch.no_grad()
+def gpu_polarity_frame_2ch(
+    x, y, p,
+    H: int, W: int, device: torch.device
+) -> Tuple[torch.Tensor, int]:
+
+    # KEY FIX: keep p as-is, then promote safely before >0
+    if p.dtype in (torch.uint8, torch.int8, torch.int16, torch.int32, torch.int64):
+        p_cmp = p.to(torch.int16)   # prevents uint8 255 -> int8 -1 wrap
+    else:
+        p_cmp = p
+
+    valid = (x >= 0) & (x < W) & (y >= 0) & (y < H)
+    if not torch.any(valid):
+        return torch.zeros((2, H, W), device=device, dtype=torch.float32), 0
+
+    x = x[valid]; y = y[valid]; p_cmp = p_cmp[valid]
+    n_valid = int(x.numel())
+
+    flat = H * W
+    lin = y * W + x
+    ch = (p_cmp > 0).to(torch.int64)
+
+    idx = lin + ch * flat
+
+    counts = torch.bincount(idx, minlength=2 * flat).to(torch.float32)
+    frame = counts.view(2, flat).view(2, H, W)
+
+    return frame, n_valid
 
 class _ColumnView:
     """Lazy 1-D view over a numeric NxC event dataset."""
@@ -614,6 +836,163 @@ class FrameAccumulator(ABC):
         """Get the output frame shape"""
         pass
 
+class H5FrameWriter:
+    """
+    Chunked compressed event-frame writer.
+
+    Stores all frames in one HDF5 file rather than thousands of frame_*.npy files.
+    """
+
+    def __init__(
+        self,
+        path,
+        frame_shape,
+        dtype=np.uint16,
+        chunk_frames=64,
+        compression="gzip",
+        compression_opts=1,
+        metadata=None,
+    ):
+        import os
+        import h5py
+        import numpy as np
+
+        self.path = path
+        self.frame_shape = tuple(frame_shape)
+        self.dtype = np.dtype(dtype)
+        self.chunk_frames = int(chunk_frames)
+        self.buffer = []
+        self.start_tick_buffer = []
+        self.end_tick_buffer = []
+        self.event_count_buffer = []
+        self.n_written = 0
+
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+
+        self.h5 = h5py.File(path, "w")
+
+        self.frames = self.h5.create_dataset(
+            "frames",
+            shape=(0, *self.frame_shape),
+            maxshape=(None, *self.frame_shape),
+            chunks=(self.chunk_frames, *self.frame_shape),
+            dtype=self.dtype,
+            compression=compression,
+            compression_opts=compression_opts,
+            shuffle=True,
+        )
+
+        self.frame_start_ticks = self.h5.create_dataset(
+            "frame_start_ticks",
+            shape=(0,),
+            maxshape=(None,),
+            chunks=(self.chunk_frames,),
+            dtype=np.int64,
+            compression=compression,
+            compression_opts=compression_opts,
+            shuffle=True,
+        )
+
+        self.frame_end_ticks = self.h5.create_dataset(
+            "frame_end_ticks",
+            shape=(0,),
+            maxshape=(None,),
+            chunks=(self.chunk_frames,),
+            dtype=np.int64,
+            compression=compression,
+            compression_opts=compression_opts,
+            shuffle=True,
+        )
+
+        self.event_counts = self.h5.create_dataset(
+            "event_counts",
+            shape=(0,),
+            maxshape=(None,),
+            chunks=(self.chunk_frames,),
+            dtype=np.int64,
+            compression=compression,
+            compression_opts=compression_opts,
+            shuffle=True,
+        )
+
+        if metadata:
+            for k, v in metadata.items():
+                try:
+                    self.h5.attrs[k] = v
+                except TypeError:
+                    self.h5.attrs[k] = str(v)
+
+    def _coerce_frame(self, frame):
+        import numpy as np
+
+        frame = np.asarray(frame)
+
+        if frame.shape != self.frame_shape:
+            raise ValueError(
+                f"Expected frame shape {self.frame_shape}, got {frame.shape}"
+            )
+
+        if np.issubdtype(self.dtype, np.integer):
+            info = np.iinfo(self.dtype)
+            frame = np.clip(frame, info.min, info.max)
+
+        return frame.astype(self.dtype, copy=False)
+
+    def append(self, frame, frame_start_tick=-1, frame_end_tick=-1, event_count=-1):
+        self.buffer.append(self._coerce_frame(frame))
+        self.start_tick_buffer.append(int(frame_start_tick))
+        self.end_tick_buffer.append(int(frame_end_tick))
+        self.event_count_buffer.append(int(event_count))
+
+        if len(self.buffer) >= self.chunk_frames:
+            self.flush()
+
+    def flush(self):
+        import numpy as np
+
+        if not self.buffer:
+            return
+
+        batch = np.stack(self.buffer, axis=0)
+        B = batch.shape[0]
+
+        old_n = self.n_written
+        new_n = old_n + B
+
+        self.frames.resize((new_n, *self.frame_shape))
+        self.frame_start_ticks.resize((new_n,))
+        self.frame_end_ticks.resize((new_n,))
+        self.event_counts.resize((new_n,))
+
+        self.frames[old_n:new_n] = batch
+        self.frame_start_ticks[old_n:new_n] = np.asarray(
+            self.start_tick_buffer, dtype=np.int64
+        )
+        self.frame_end_ticks[old_n:new_n] = np.asarray(
+            self.end_tick_buffer, dtype=np.int64
+        )
+        self.event_counts[old_n:new_n] = np.asarray(
+            self.event_count_buffer, dtype=np.int64
+        )
+
+        self.n_written = new_n
+
+        self.buffer.clear()
+        self.start_tick_buffer.clear()
+        self.end_tick_buffer.clear()
+        self.event_count_buffer.clear()
+
+    def close(self):
+        self.flush()
+        self.h5.attrs["total_frames"] = int(self.n_written)
+        self.h5.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
+
 class EventCountFrameAccumulator:
     def __init__(self, width, height, max_events_per_frame, hot_pixels=None, polarity_mode='separate'):
         """
@@ -825,6 +1204,7 @@ class PolarityFrameAccumulator(FrameAccumulator):
         self.use_gpu = True
         self._torch = None
         self._device = None
+        self._warned_torch_fallback = False
         try:
             import torch
 
@@ -836,7 +1216,8 @@ class PolarityFrameAccumulator(FrameAccumulator):
         except Exception:
             self._torch = None
             self._device = None
-        print(f"PolarityFrameAccumulator initialized. GPU support: {'yes' if self._torch is not None else 'no'}, device: {self._device}")
+        backend = self._device.type if self._device is not None else "numpy"
+        print(f"PolarityFrameAccumulator initialized. torch support: {'yes' if self._torch is not None else 'no'}, device: {backend}")
         self._hot_lin = _linear_hot_pixels(self.hot_pixels, self.width, self.height)
 
     def _filter_hot_pixels(self, x, y):
@@ -877,23 +1258,29 @@ class PolarityFrameAccumulator(FrameAccumulator):
 
         if self.use_gpu and self._torch is not None and self._device is not None:
             torch = self._torch
-            with torch.no_grad():
-                x_t = torch.as_tensor(x_valid, device=self._device, dtype=torch.int64)
-                y_t = torch.as_tensor(y_valid, device=self._device, dtype=torch.int64)
-                p_t = torch.as_tensor(p_valid, device=self._device, dtype=torch.bool)
+            try:
+                with torch.no_grad():
+                    x_t = torch.as_tensor(x_valid, device=self._device, dtype=torch.int64)
+                    y_t = torch.as_tensor(y_valid, device=self._device, dtype=torch.int64)
+                    p_t = torch.as_tensor(p_valid, device=self._device, dtype=torch.bool)
 
-                lin = y_t * self.width + x_t
+                    lin = y_t * self.width + x_t
 
-                frame = torch.zeros((2, self.height * self.width), dtype=torch.float32, device=self._device)
+                    frame = torch.zeros((2, self.height * self.width), dtype=torch.float32, device=self._device)
 
-                if p_t.any():
                     pos_lin = lin[p_t]
-                    frame[0].index_add_(0, pos_lin, torch.ones_like(pos_lin, dtype=torch.float32))
-                if (~p_t).any():
-                    neg_lin = lin[~p_t]
-                    frame[1].index_add_(0, neg_lin, torch.ones_like(neg_lin, dtype=torch.float32))
+                    if pos_lin.numel() > 0:
+                        frame[0].index_add_(0, pos_lin, torch.ones_like(pos_lin, dtype=torch.float32))
+                    neg_mask = ~p_t
+                    neg_lin = lin[neg_mask]
+                    if neg_lin.numel() > 0:
+                        frame[1].index_add_(0, neg_lin, torch.ones_like(neg_lin, dtype=torch.float32))
 
-                return frame.view(2, self.height, self.width).permute(1, 2, 0).cpu().numpy()
+                    return frame.view(2, self.height, self.width).permute(1, 2, 0).cpu().numpy()
+            except Exception as exc:
+                if not self._warned_torch_fallback:
+                    print(f"Warning: torch accumulation failed on device '{self._device}'; falling back to NumPy. Error: {exc}")
+                    self._warned_torch_fallback = True
 
         frame = np.zeros((self.height * self.width, 2), dtype=np.float32)
         lin = (y_valid.astype(np.int64) * self.width + x_valid.astype(np.int64))
@@ -1019,14 +1406,20 @@ class GeneralizedFrameBuilder:
 
     def _process_frames_by_count(self, ds, output_dir, start_idx, end_idx, chunk_size):
         """
-        Stream events and write frames with at most `max_events_per_frame` valid (non-hot) events.
-        Also records per-frame mid timestamps in ticks as 'event_frame_times_ticks.npy'.
+        Stream events and write event-count frames to one chunked HDF5 file.
+
+        Output:
+            output_dir/frames.h5
+
+        Also writes:
+            output_dir/event_frame_times_ticks.npy
+
+        for compatibility with any existing downstream code that expects mid ticks.
         """
 
         max_events = int(getattr(self.accumulator, "max_events", self.max_events))
         frame_shape = self.accumulator.get_frame_shape(self.width, self.height)
 
-        # Infer channels from frame_shape (e.g., (H, W, 2) for polarity)
         if len(frame_shape) == 3:
             H, W, C = frame_shape
         else:
@@ -1034,139 +1427,500 @@ class GeneralizedFrameBuilder:
             C = 1
 
         has_p = ds.get("p") is not None
-
         hot_lin = getattr(self.accumulator, "_hot_lin", None)
+        flat_size = self.width * self.height
 
-        def _flush(idx, frame_arr, t0_tick, t1_tick):
-            np.save(os.path.join(output_dir, f"frame_{idx:06d}.npy"), frame_arr)
-            if idx < 3:
-                self._save_frame_preview(frame_arr, output_dir, idx)
+        frame_store_path = os.path.join(output_dir, "frames.h5")
+
+        writer = H5FrameWriter(
+            frame_store_path,
+            frame_shape=frame_shape,
+            dtype=np.uint16,
+            chunk_frames=64,
+            compression="gzip",
+            compression_opts=1,
+            metadata={
+                "width": int(self.width),
+                "height": int(self.height),
+                "accumulator_type": self.accumulator_type,
+                "mode": "eventcount",
+                "max_events_per_frame": int(max_events),
+                "ticks_per_second": float(getattr(self, "ticks_per_second", -1)),
+                "frame_layout": "HWC" if len(frame_shape) == 3 else "HW",
+            },
+        )
+
+        def _flush(frame_idx, frame_arr, t0_tick, t1_tick):
+            writer.append(
+                frame_arr,
+                frame_start_tick=t0_tick,
+                frame_end_tick=t1_tick,
+                event_count=int(np.sum(frame_arr)),
+            )
+
+            if getattr(self, "save_previews", False) and frame_idx < 3:
+                self._save_frame_preview(frame_arr, output_dir, frame_idx)
+
             if t0_tick is None or t1_tick is None:
                 return None
-            # mid-tick (int)
+
+            try:
+                if np.isnan(t0_tick) or np.isnan(t1_tick):
+                    return None
+            except TypeError:
+                pass
+
             return int((int(t0_tick) + int(t1_tick)) // 2)
 
         idx = int(start_idx)
         frames_written = 0
-        current_frame = np.zeros(frame_shape, dtype=np.float32)  # respects channels if present
+        current_frame = np.zeros(frame_shape, dtype=np.float32)
         used_in_frame = 0
 
-        # Track ticks used in current frame
         cur_t0_tick = None
         cur_t1_tick = None
+        mid_ticks = []
 
-        mid_ticks = []  # list of per-frame mid ticks (ints)
-        flat_size = self.width * self.height
+        try:
+            with tqdm(desc=f"Generating frames (≤{max_events} ev/frame)") as pbar:
+                while idx < end_idx:
+                    chunk_end = min(idx + chunk_size, end_idx)
 
-        with tqdm(desc=f"Generating frames (≤{max_events} ev/frame)") as pbar:
-            while idx < end_idx:
-                chunk_end = min(idx + chunk_size, end_idx)
+                    x_chunk = ds["x"][idx:chunk_end]
+                    y_chunk = ds["y"][idx:chunk_end]
+                    t_chunk = ds["t"][idx:chunk_end]
 
-                # Read only what we need
-                x_chunk = ds["x"][idx:chunk_end]
-                y_chunk = ds["y"][idx:chunk_end]
-                t_chunk = ds["t"][idx:chunk_end]
-                if C > 1:
-                    if not has_p:
-                        raise RuntimeError("Accumulator expects multi-channel frames (e.g., polarity), "
-                                        "but dataset has no 'p' field.")
-                    p_chunk = ds["p"][idx:chunk_end]
-
-                # Validity check
-                valid = _valid_coord_mask(x_chunk, y_chunk, self.width, self.height)
-                if not np.all(valid):
-                    _record_out_of_bounds(self.accumulator, x_chunk, y_chunk, ~valid)
-
-                if not np.any(valid):
-                    idx = chunk_end
-                    continue
-
-                xs = x_chunk[valid]
-                ys = y_chunk[valid]
-                ts = t_chunk[valid]
-                if C > 1:
-                    ps = p_chunk[valid]
-
-                lin = (ys.astype(np.int64) * self.width + xs.astype(np.int64))
-                keep_mask = _hot_pixel_keep_mask(self.accumulator, xs, ys, hot_lin)
-
-                if not keep_mask.any():
-                    idx = chunk_end
-                    continue
-
-                # positions within the raw slice for kept events (time order preserved)
-                valid_pos = np.nonzero(valid)[0]
-                keep_pos_within_valid = np.nonzero(keep_mask)[0]
-                kept_raw_pos = valid_pos[keep_pos_within_valid]
-
-                need   = max_events - used_in_frame
-                take_n = int(min(need, kept_raw_pos.size))
-
-                if take_n > 0:
-                    use_lin = lin[keep_mask][:take_n]
-                    use_ts  = ts[keep_mask][:take_n]
+                    p_chunk = None
                     if C > 1:
-                        use_ps_raw = ps[keep_mask][:take_n]
-                        use_pos = use_ps_raw > 0
+                        if not has_p:
+                            raise RuntimeError(
+                                "Accumulator expects multi-channel frames, but dataset has no 'p' field."
+                            )
+                        p_chunk = ds["p"][idx:chunk_end]
 
-                    # accumulate counts
-                    if C > 1:
-                        if use_pos.any():
-                            pos_counts = np.bincount(use_lin[use_pos], minlength=flat_size).astype(np.float32, copy=False)
-                            current_frame[..., 0] += pos_counts.reshape(H, W)
-                        if (~use_pos).any():
-                            neg_counts = np.bincount(use_lin[~use_pos], minlength=flat_size).astype(np.float32, copy=False)
-                            current_frame[..., 1] += neg_counts.reshape(H, W)
-                    else:
-                        counts = np.bincount(use_lin, minlength=flat_size).astype(np.float32, copy=False)
-                        current_frame += counts.reshape(H, W)
+                    valid = _valid_coord_mask(x_chunk, y_chunk, self.width, self.height)
 
-                    used_in_frame += take_n
+                    if not np.all(valid):
+                        _record_out_of_bounds(self.accumulator, x_chunk, y_chunk, ~valid)
 
-                    # update frame tick range
-                    first_tick = int(use_ts[0])
-                    last_tick  = int(use_ts[-1])
-                    if cur_t0_tick is None:
-                        cur_t0_tick = first_tick
-                    cur_t1_tick = last_tick
+                    if not np.any(valid):
+                        idx = chunk_end
+                        continue
 
-                    # Advance idx past last consumed raw row
-                    last_used_pos = int(kept_raw_pos[take_n - 1])
-                    idx = idx + last_used_pos + 1
-                else:
-                    # couldn't take more from this chunk (frame probably full)
-                    pass
+                    xs = x_chunk[valid]
+                    ys = y_chunk[valid]
+                    ts = t_chunk[valid]
+                    ps = p_chunk[valid] if p_chunk is not None else None
 
-                # Flush if frame full, or end-of-file with partial frame
-                if used_in_frame >= max_events or (idx >= end_idx and used_in_frame > 0):
+                    lin = ys.astype(np.int64) * self.width + xs.astype(np.int64)
+                    keep_mask = _hot_pixel_keep_mask(self.accumulator, xs, ys, hot_lin)
+
+                    if not np.any(keep_mask):
+                        idx = chunk_end
+                        continue
+
+                    valid_pos = np.nonzero(valid)[0]
+                    keep_pos_within_valid = np.nonzero(keep_mask)[0]
+                    kept_raw_pos = valid_pos[keep_pos_within_valid]
+
+                    need = max_events - used_in_frame
+                    take_n = int(min(need, kept_raw_pos.size))
+
+                    if take_n > 0:
+                        use_lin = lin[keep_mask][:take_n]
+                        use_ts = ts[keep_mask][:take_n]
+
+                        if C > 1:
+                            use_ps_raw = ps[keep_mask][:take_n]
+                            use_pos = use_ps_raw > 0
+
+                            if np.any(use_pos):
+                                pos_counts = np.bincount(
+                                    use_lin[use_pos],
+                                    minlength=flat_size,
+                                ).astype(np.float32, copy=False)
+                                current_frame[..., 0] += pos_counts.reshape(H, W)
+
+                            if np.any(~use_pos):
+                                neg_counts = np.bincount(
+                                    use_lin[~use_pos],
+                                    minlength=flat_size,
+                                ).astype(np.float32, copy=False)
+                                current_frame[..., 1] += neg_counts.reshape(H, W)
+                        else:
+                            counts = np.bincount(
+                                use_lin,
+                                minlength=flat_size,
+                            ).astype(np.float32, copy=False)
+                            current_frame += counts.reshape(H, W)
+
+                        used_in_frame += take_n
+
+                        first_tick = int(use_ts[0])
+                        last_tick = int(use_ts[-1])
+
+                        if cur_t0_tick is None:
+                            cur_t0_tick = first_tick
+                        cur_t1_tick = last_tick
+
+                        last_used_pos = int(kept_raw_pos[take_n - 1])
+                        idx = idx + last_used_pos + 1
+
+                    if used_in_frame >= max_events:
+                        mid = _flush(frames_written, current_frame, cur_t0_tick, cur_t1_tick)
+                        if mid is not None:
+                            mid_ticks.append(mid)
+
+                        frames_written += 1
+                        pbar.update(1)
+
+                        current_frame.fill(0.0)
+                        used_in_frame = 0
+                        cur_t0_tick = None
+                        cur_t1_tick = None
+
+                    if idx < chunk_end and used_in_frame < max_events:
+                        continue
+
+                    idx = max(idx, chunk_end)
+
+                if used_in_frame > 0:
                     mid = _flush(frames_written, current_frame, cur_t0_tick, cur_t1_tick)
                     if mid is not None:
                         mid_ticks.append(mid)
+
                     frames_written += 1
                     pbar.update(1)
 
-                    # reset
-                    current_frame.fill(0.0)
-                    used_in_frame = 0
-                    cur_t0_tick = None
-                    cur_t1_tick = None
+        finally:
+            writer.close()
 
-                # Continue within this chunk if there are still rows and we need more
-                if idx < chunk_end and used_in_frame < max_events:
-                    continue
-                else:
-                    # move to next chunk
-                    idx = max(idx, chunk_end)
-
-        # Save per-frame mid ticks
         if mid_ticks:
-            np.save(os.path.join(output_dir, "event_frame_times_ticks.npy"),
-                    np.asarray(mid_ticks, dtype=np.int64))
+            np.save(
+                os.path.join(output_dir, "event_frame_times_ticks.npy"),
+                np.asarray(mid_ticks, dtype=np.int64),
+            )
 
         return frames_written
 
+    @staticmethod
+    def _coerce_seconds_per_tick(time_scale):
+        """
+        Normalize timestamp scale inputs for stream_event_windows_raw.
+
+        Existing Event-LAB config parsing returns ticks per second (for example
+        1e6 for microseconds). The borrowed raw streamer expects seconds per
+        tick (for example 1e-6). Accept both for convenience.
+        """
+        if time_scale is None:
+            return None
+
+        scale = float(time_scale)
+        if scale <= 0:
+            raise ValueError(f"time_scale must be positive, got {time_scale!r}")
+
+        if scale >= 1.0:
+            return 1.0 / scale
+        return scale
+
+    def _detect_seconds_per_tick(self, hdf5_path):
+        with h5py.File(hdf5_path, "r") as h5f:
+            ev = _locate_events_node(h5f)
+            ds, _ = self._fields_handles(ev)
+            tds = ds.get("t")
+            if tds is None:
+                raise ValueError("Timestamps not found in events (expected one of t/timestamp/timestamps/time).")
+
+            ticks_per_second = self._detect_time_scale(h5f, ev, tds)
+            if ticks_per_second <= 0:
+                raise ValueError(f"Detected invalid timestamp scale: {ticks_per_second!r}")
+            return 1.0 / float(ticks_per_second)
+
+    def _resolve_stream_seconds_per_tick(self, hdf5_path, time_scale):
+        seconds_per_tick = self._coerce_seconds_per_tick(time_scale)
+        if seconds_per_tick is None:
+            seconds_per_tick = self._detect_seconds_per_tick(hdf5_path)
+
+        self.ticks_per_second = 1.0 / float(seconds_per_tick)
+        return float(seconds_per_tick)
+
+    def _fast_polarity_frame_from_events(self, x, y, p):
+        """
+        Fast polarity accumulation using the copied torch/bincount polarity builder.
+
+        Returns existing GeneralizedFrameBuilder polarity layout:
+            [H, W, 2]
+
+        Channel convention preserved:
+            frame[..., 0] = positive events
+            frame[..., 1] = negative events
+        """
+        import torch
+
+        if p is None or len(p) != len(x):
+            raise ValueError(
+                "Polarity frame accumulation requires one polarity value per event."
+            )
+
+        frame_shape = self.accumulator.get_frame_shape(self.width, self.height)
+        empty = np.zeros(frame_shape, dtype=np.float32)
+
+        if len(x) == 0:
+            return empty
+
+        x = np.asarray(x)
+        y = np.asarray(y)
+        p = np.asarray(p)
+
+        # Keep the same coordinate filtering / accounting as the existing code.
+        valid = _valid_coord_mask(x, y, self.width, self.height)
+        if not np.all(valid):
+            _record_out_of_bounds(self.accumulator, x, y, ~valid)
+
+        if not np.any(valid):
+            return empty
+
+        x = x[valid]
+        y = y[valid]
+        p = p[valid]
+
+        # Preserve hot-pixel behaviour.
+        hot_lin = getattr(self.accumulator, "_hot_lin", None)
+        keep_mask = _hot_pixel_keep_mask(self.accumulator, x, y, hot_lin)
+
+        if not np.any(keep_mask):
+            return empty
+
+        x = x[keep_mask]
+        y = y[keep_mask]
+        p = p[keep_mask]
+
+        # torch.bincount is the fast bit. Prefer CUDA if available.
+        # Do not default to MPS unless you've tested bincount there.
+        device = getattr(self, "_fast_polarity_device", None)
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            self._fast_polarity_device = device
+
+        x_t = torch.as_tensor(x, device=device, dtype=torch.long)
+        y_t = torch.as_tensor(y, device=device, dtype=torch.long)
+        p_t = torch.as_tensor(p, device=device)
+
+        frame_chw, _ = gpu_polarity_frame_2ch(
+            x_t,
+            y_t,
+            p_t,
+            H=self.height,
+            W=self.width,
+            device=device,
+        )
+
+        # IMPORTANT:
+        # gpu_polarity_frame_2ch returns [2, H, W] with:
+        #   channel 0 = negative/non-positive
+        #   channel 1 = positive
+        #
+        # Existing GeneralizedFrameBuilder polarity frames use [H, W, 2] with:
+        #   channel 0 = positive
+        #   channel 1 = negative
+        frame_chw = frame_chw[[1, 0], :, :]  # [pos, neg]
+        frame_hwc = frame_chw.permute(1, 2, 0).contiguous()
+
+        return frame_hwc.cpu().numpy().astype(np.float32, copy=False)
+
+    def _frame_from_raw_window(self, x, y, t, p, frame_start_tick, frame_end_tick):
+        if self.accumulator_type == "eventcount":
+            frame, _, _, _ = self.accumulator.accumulate_by_count(
+                x, y, t, p,
+                start_idx=0,
+            )
+            return frame.astype(np.float32, copy=False)
+
+        if self.accumulator_type == "polarity":
+            return self._fast_polarity_frame_from_events(x, y, p)
+
+        return self.accumulator.accumulate_events(
+            x, y, t, p,
+            frame_start_time=frame_start_tick,
+            frame_end_time=frame_end_tick,
+        )
+
+    def stream_hdf5_frames(self, hdf5_path, timewindow_ns=None, dt_ms=None,
+                           start_time_sec=None, offset_ns=None, chunk_size=100_000,
+                           time_scale=None, skip=None, max_frames=None,
+                           return_metadata=False):
+        """
+        Stream accumulated frames directly from an HDF5 event file.
+
+        This is the direct-frame counterpart to build_frames(): it uses the
+        fast raw rolling-window streamer and returns frames in memory instead
+        of saving frame_*.npy files. ``time_scale`` may be either seconds per
+        tick or ticks per second.
+        """
+        if dt_ms is None:
+            if timewindow_ns is None:
+                raise ValueError("Provide either dt_ms or timewindow_ns.")
+            dt_ms = float(timewindow_ns) / 1e6
+        else:
+            dt_ms = float(dt_ms)
+
+        if dt_ms <= 0:
+            raise ValueError(f"dt_ms must be positive, got {dt_ms!r}")
+
+        if start_time_sec is None and offset_ns is not None:
+            start_time_sec = float(offset_ns) * 1e-9
+
+        seconds_per_tick = self._resolve_stream_seconds_per_tick(hdf5_path, time_scale)
+        window_ticks = int(round((dt_ms / 1000.0) / seconds_per_tick))
+        if window_ticks <= 0:
+            raise ValueError("Effective time window is zero; increase dt_ms/timewindow_ns or fix time_scale.")
+
+        if max_frames is not None:
+            max_frames = int(max_frames)
+            if max_frames <= 0:
+                return
+
+        yielded = 0
+        for window in stream_event_windows_raw(
+            Path(hdf5_path),
+            dt_ms=dt_ms,
+            chunk_size=int(chunk_size),
+            time_scale=seconds_per_tick,
+            start_time_sec=start_time_sec,
+            skip=skip,
+        ):
+            (
+                frame_start_sec,
+                frame_end_sec,
+                frame_end_tick,
+                x_win,
+                y_win,
+                t_win_raw,
+                p_win,
+                frame_idx,
+                read_ms,
+            ) = window
+
+            frame_start_tick = int(frame_end_tick) - window_ticks
+            frame = self._frame_from_raw_window(
+                x_win, y_win, t_win_raw, p_win,
+                frame_start_tick=frame_start_tick,
+                frame_end_tick=int(frame_end_tick),
+            )
+
+            metadata = {
+                "frame_idx": int(frame_idx),
+                "frame_start_sec": float(frame_start_sec),
+                "frame_end_sec": float(frame_end_sec),
+                "frame_start_tick": int(frame_start_tick),
+                "frame_end_tick": int(frame_end_tick),
+                "event_count": int(len(x_win)),
+                "read_ms": float(read_ms),
+                "ticks_per_second": float(self.ticks_per_second),
+            }
+
+            yielded += 1
+            yield (frame, metadata) if return_metadata else frame
+
+            if max_frames is not None and yielded >= max_frames:
+                break
+
+    def get_streamed_frame(self, hdf5_path, timewindow_ns=None, dt_ms=None,
+                           start_time_sec=None, offset_ns=None, frame_index=0,
+                           chunk_size=100_000, time_scale=None,
+                           return_metadata=False):
+        """
+        Return one frame directly from an HDF5 stream.
+
+        ``frame_index`` is relative to ``start_time_sec``/``offset_ns``. Use
+        frame_index=0 to fetch the first window at the requested start time.
+        """
+        frame_index = int(frame_index)
+        if frame_index < 0:
+            raise ValueError("frame_index must be non-negative.")
+
+        stream = self.stream_hdf5_frames(
+            hdf5_path=hdf5_path,
+            timewindow_ns=timewindow_ns,
+            dt_ms=dt_ms,
+            start_time_sec=start_time_sec,
+            offset_ns=offset_ns,
+            chunk_size=chunk_size,
+            time_scale=time_scale,
+            max_frames=frame_index + 1,
+            return_metadata=True,
+        )
+
+        for yielded_idx, (frame, metadata) in enumerate(stream):
+            if yielded_idx == frame_index:
+                return (frame, metadata) if return_metadata else frame
+
+        raise IndexError(f"No streamed frame available at frame_index={frame_index}.")
+
 
     # -------------------- public API --------------------
+    def _append_countmatch_stats_from_h5(self, output_dir, batch_size=256):
+        """
+        Compute countmatch stats from output_dir/frames.h5.
+
+        Replaces the old frame_*.npy scan.
+        """
+
+        frame_store_path = os.path.join(output_dir, "frames.h5")
+
+        if not os.path.exists(frame_store_path):
+            self._append_metadata(
+                output_dir,
+                countmatch=True,
+                avg_events_per_frame=0.0,
+                frames_counted_for_avg=0,
+                countmatch_error=f"Missing frame store: {frame_store_path}",
+            )
+            return
+
+        total_sum = 0.0
+        pos_sum = 0.0
+        neg_sum = 0.0
+        saw_polarity = False
+
+        with h5py.File(frame_store_path, "r") as f:
+            frames = f["frames"]
+            n = int(frames.shape[0])
+
+            for start in range(0, n, int(batch_size)):
+                end = min(start + int(batch_size), n)
+                batch = frames[start:end]
+
+                if batch.ndim == 4 and batch.shape[-1] == 2:
+                    saw_polarity = True
+                    ps = float(batch[..., 0].sum())
+                    ns = float(batch[..., 1].sum())
+                    pos_sum += ps
+                    neg_sum += ns
+                    total_sum += ps + ns
+                else:
+                    total_sum += float(batch.sum())
+
+        if n > 0:
+            updates = {
+                "countmatch": True,
+                "avg_events_per_frame": float(total_sum / n),
+                "frames_counted_for_avg": int(n),
+            }
+
+            if saw_polarity:
+                updates["avg_pos_events_per_frame"] = float(pos_sum / n)
+                updates["avg_neg_events_per_frame"] = float(neg_sum / n)
+
+            self._append_metadata(output_dir, **updates)
+        else:
+            self._append_metadata(
+                output_dir,
+                countmatch=True,
+                avg_events_per_frame=0.0,
+                frames_counted_for_avg=0,
+            )
+
     def build_frames(self, hdf5_path, output_dir, timewindow_ns, offset_ns=None,
                     chunk_size=100_000, max_frames=None,
                     rdcc_nbytes=64*1024*1024, rdcc_nslots=1_048_579,
@@ -1299,49 +2053,24 @@ class GeneralizedFrameBuilder:
                 chunk_size=int(chunk_size)
             )
 
-            # Query-side countmatch stats (for future use)
+            # Query-side countmatch stats from the HDF5 frame store
             if countmatch:
-                frame_paths = sorted(glob.glob(os.path.join(output_dir, "frame_*.npy")))
-                n = len(frame_paths)
-                total_sum = 0.0
-                pos_sum = 0.0
-                neg_sum = 0.0
-                saw_polarity = False
-
-                for fp in frame_paths:
-                    arr = np.load(fp, mmap_mode="r")  # cheap on memory
-                    if arr.ndim == 3 and arr.shape[-1] == 2:
-                        saw_polarity = True
-                        ps = float(arr[..., 0].sum())
-                        ns = float(arr[..., 1].sum())
-                        pos_sum += ps
-                        neg_sum += ns
-                        total_sum += (ps + ns)
-                    else:
-                        total_sum += float(arr.sum())
-
-                if n > 0:
-                    updates = {
-                        "countmatch": True,
-                        "avg_events_per_frame": float(total_sum / n),
-                        "frames_counted_for_avg": int(n),
-                    }
-                    if saw_polarity:
-                        updates["avg_pos_events_per_frame"] = float(pos_sum / n)
-                        updates["avg_neg_events_per_frame"] = float(neg_sum / n)
-                    self._append_metadata(output_dir, **updates)
-                else:
-                    self._append_metadata(output_dir, countmatch=True,
-                                        avg_events_per_frame=0.0,
-                                        frames_counted_for_avg=0)
+                self._append_countmatch_stats_from_h5(output_dir)
 
             self._print_processing_summary()
 
 
     def _process_frames_streaming(self, ds, output_dir, start_tick, window_ticks,
                                   total_frames, start_idx, end_idx, chunk_size):
-        """Single-pass streaming with minimal resident memory."""
-        # Only read fields required by the accumulator
+        """
+        Single-pass fixed-time-window frame generation.
+
+        Writes one chunked HDF5 file:
+            output_dir/frames.h5
+
+        instead of thousands of frame_XXXXXX.npy files.
+        """
+
         need_t = True
         need_x = True
         need_y = True
@@ -1351,75 +2080,114 @@ class GeneralizedFrameBuilder:
         current_frame_idx = 0
         current_frame = np.zeros(frame_shape, dtype=np.float32)
 
-        def _flush(idx, frame_arr):
-            np.save(os.path.join(output_dir, f"frame_{idx:06d}.npy"), frame_arr)
-            if idx < 3:
-                self._save_frame_preview(frame_arr, output_dir, idx)
+        frame_store_path = os.path.join(output_dir, "frames.h5")
 
-        with tqdm(total=total_frames, desc="Generating frames") as pbar:
-            for s in range(start_idx, end_idx, chunk_size):
-                e = min(s + chunk_size, end_idx)
+        writer = H5FrameWriter(
+            frame_store_path,
+            frame_shape=frame_shape,
+            dtype=np.uint16,
+            chunk_frames=64,
+            compression="gzip",
+            compression_opts=1,
+            metadata={
+                "width": int(self.width),
+                "height": int(self.height),
+                "accumulator_type": self.accumulator_type,
+                "mode": "fixed_time_window",
+                "start_tick": int(start_tick),
+                "window_ticks": int(window_ticks),
+                "total_frames_requested": int(total_frames),
+                "ticks_per_second": float(getattr(self, "ticks_per_second", -1)),
+                "frame_layout": "HWC" if len(frame_shape) == 3 else "HW",
+            },
+        )
 
-                x_chunk = ds["x"][s:e] if (need_x and ds["x"] is not None) else None
-                y_chunk = ds["y"][s:e] if (need_y and ds["y"] is not None) else None
-                t_chunk = ds["t"][s:e] if need_t else None
-                p_chunk = ds["p"][s:e] if (need_p and ds["p"] is not None) else None
+        def _flush(frame_idx, frame_arr):
+            frame_start_tick = int(start_tick + frame_idx * window_ticks)
+            frame_end_tick = int(start_tick + (frame_idx + 1) * window_ticks)
 
-                # Narrow to our overall time window [start_tick, end_tick)
-                # For efficiency, compute end_tick on the fly:
-                end_tick_total = start_tick + total_frames * window_ticks
-                in_range = (t_chunk >= start_tick) & (t_chunk < end_tick_total)
-                if not np.any(in_range):
-                    continue
+            writer.append(
+                frame_arr,
+                frame_start_tick=frame_start_tick,
+                frame_end_tick=frame_end_tick,
+                event_count=int(np.sum(frame_arr)),
+            )
 
-                # Slice to in-range events
-                t_chunk = t_chunk[in_range]
-                x_chunk = x_chunk[in_range] if x_chunk is not None else None
-                y_chunk = y_chunk[in_range] if y_chunk is not None else None
-                p_chunk = p_chunk[in_range] if p_chunk is not None else None
+            if getattr(self, "save_previews", False) and frame_idx < 3:
+                self._save_frame_preview(frame_arr, output_dir, frame_idx)
 
-                # Group by frame index within this chunk (non-decreasing by time)
-                frame_idx_chunk = ((t_chunk - start_tick) // window_ticks).astype(np.int64)
-                # Clamp (defensive)
-                np.clip(frame_idx_chunk, 0, total_frames - 1, out=frame_idx_chunk)
+        end_tick_total = int(start_tick + total_frames * window_ticks)
 
-                i = 0
-                n = frame_idx_chunk.size
-                while i < n:
-                    fi = int(frame_idx_chunk[i])
+        try:
+            with tqdm(total=total_frames, desc="Generating frames") as pbar:
+                for s in range(start_idx, end_idx, chunk_size):
+                    e = min(s + chunk_size, end_idx)
 
-                    # Flush any completed frames before fi
-                    while current_frame_idx < fi and current_frame_idx < total_frames:
-                        _flush(current_frame_idx, current_frame)
-                        pbar.update(1)
-                        current_frame_idx += 1
-                        current_frame = np.zeros(frame_shape, dtype=np.float32)
+                    x_chunk = ds["x"][s:e] if (need_x and ds["x"] is not None) else None
+                    y_chunk = ds["y"][s:e] if (need_y and ds["y"] is not None) else None
+                    t_chunk = ds["t"][s:e] if need_t else None
+                    p_chunk = ds["p"][s:e] if (need_p and ds["p"] is not None) else None
 
-                    # contiguous slice for this frame
-                    j = i + 1
-                    while j < n and frame_idx_chunk[j] == fi:
-                        j += 1
+                    in_range = (t_chunk >= start_tick) & (t_chunk < end_tick_total)
+                    if not np.any(in_range):
+                        continue
 
-                    # Accumulate into current frame
-                    x_slice = x_chunk[i:j] if x_chunk is not None else np.empty((0,), dtype=np.uint16)
-                    y_slice = y_chunk[i:j] if y_chunk is not None else np.empty((0,), dtype=np.uint16)
-                    t_slice = t_chunk[i:j]
-                    p_slice = p_chunk[i:j] if p_chunk is not None else np.empty((0,), dtype=np.bool_)
+                    t_chunk = t_chunk[in_range]
+                    x_chunk = x_chunk[in_range] if x_chunk is not None else None
+                    y_chunk = y_chunk[in_range] if y_chunk is not None else None
+                    p_chunk = p_chunk[in_range] if p_chunk is not None else None
 
-                    chunk_frame = self.accumulator.accumulate_events(
-                        x_slice, y_slice, t_slice, p_slice,
-                        frame_start_time=start_tick + fi * window_ticks,
-                        frame_end_time=start_tick + (fi + 1) * window_ticks,
-                    )
-                    current_frame += chunk_frame
-                    i = j
+                    frame_idx_chunk = ((t_chunk - start_tick) // window_ticks).astype(np.int64)
+                    np.clip(frame_idx_chunk, 0, total_frames - 1, out=frame_idx_chunk)
 
-            # Flush remaining frames (including last)
-            while current_frame_idx < total_frames:
-                _flush(current_frame_idx, current_frame)
-                pbar.update(1)
-                current_frame_idx += 1
-                current_frame = np.zeros(frame_shape, dtype=np.float32)
+                    i = 0
+                    n = frame_idx_chunk.size
+
+                    while i < n:
+                        fi = int(frame_idx_chunk[i])
+
+                        while current_frame_idx < fi and current_frame_idx < total_frames:
+                            _flush(current_frame_idx, current_frame)
+                            pbar.update(1)
+                            current_frame_idx += 1
+                            current_frame = np.zeros(frame_shape, dtype=np.float32)
+
+                        j = i + 1
+                        while j < n and frame_idx_chunk[j] == fi:
+                            j += 1
+
+                        x_slice = x_chunk[i:j] if x_chunk is not None else np.empty((0,), dtype=np.uint16)
+                        y_slice = y_chunk[i:j] if y_chunk is not None else np.empty((0,), dtype=np.uint16)
+                        t_slice = t_chunk[i:j]
+                        p_slice = p_chunk[i:j] if p_chunk is not None else np.empty((0,), dtype=np.bool_)
+
+                        if self.accumulator_type == "polarity":
+                            chunk_frame = self._fast_polarity_frame_from_events(
+                                x_slice,
+                                y_slice,
+                                p_slice,
+                            )
+                        else:
+                            chunk_frame = self.accumulator.accumulate_events(
+                                x_slice,
+                                y_slice,
+                                t_slice,
+                                p_slice,
+                                frame_start_time=start_tick + fi * window_ticks,
+                                frame_end_time=start_tick + (fi + 1) * window_ticks,
+                            )
+
+                        current_frame += chunk_frame
+                        i = j
+
+                while current_frame_idx < total_frames:
+                    _flush(current_frame_idx, current_frame)
+                    pbar.update(1)
+                    current_frame_idx += 1
+                    current_frame = np.zeros(frame_shape, dtype=np.float32)
+
+        finally:
+            writer.close()
 
     def _create_metadata_file(self, output_dir, timewindow_ns, start_time, total_frames, width, height):
         metadata = {
@@ -1433,7 +2201,9 @@ class GeneralizedFrameBuilder:
             'height': int(height),
             'accumulator_type': self.accumulator_type,
             'frame_shape': self.accumulator.get_frame_shape(width, height),
-            'dtype': 'float32',
+            'dtype': 'uint16',
+            'storage_file': 'frames.h5',
+            'storage_dataset': 'frames',
             'hot_pixels_count': len(self.hot_pixels) if self.hot_pixels is not None else 0,
             'hot_pixels_enabled': self.hot_pixels is not None
         }

@@ -75,6 +75,7 @@ format:
   data: 
     format: "hdf5"  # Data format for the sequences
     timestamp_val: "ns"
+    time_scale: 1e-9
   ground_truth: "nmea"  # Format for ground truth data
   hot_pixel: "txt"  # Format for hot pixel data
 
