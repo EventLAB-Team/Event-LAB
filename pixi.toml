@@ -1,6 +1,6 @@
-[project]
+[workspace]
 name = "Event-LAB"
-version = "0.0.1"
+version = "0.1.1"
 description = "Event-based localization methods benchmarking toolkit"
 channels = ["conda-forge", "robostack-noetic"]
 platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
@@ -13,6 +13,9 @@ demo = {cmd = "pixi run python eventlab_run.py eventvlad brisbane_event sunset2 
 
 [system-requirements]
 cuda = "12"
+
+[environments]
+e2vid = {features = ["e2vid"], no-default-feature = true}
 
 [dependencies]
 python = "*"
@@ -42,8 +45,63 @@ wandb = "*"
 pyarrow = "*"
 fastparquet = "*"
 torchvision = "*"
+huggingface_hub = ">=1.5.0,<2"
+sphinx = ">=8.2.3,<9"
+sphinx-rtd-theme = ">=3.1.0,<4"
+myst-parser = ">=5.1.0,<6"
 
 [target.linux-64.dependencies]
+cuda-version = "12.*"
+mkl = "<2026"
+pytorch-gpu = "*"
+cuda-cudart-dev = "*"
+cuda-crt = "*"
+cudnn = "*"
+libcusparse-dev = "*"
+cuda-driver-dev = "*"
+cuda-nvcc = "*"
+cuda-nvrtc-dev = "*"
+cuda-nvtx-dev = "*"
+cuda-nvml-dev = "*"
+cuda-profiler-api = "*"
+cusparselt = "*"
+libcublas-dev = "*"
+libcudss-dev = "*"
+libcufile-dev = "*"
+libcufft-dev = "*"
+libcurand-dev = "*"
+libcusolver-dev = "*"
+safetensors = "*"
+
+[target.linux-64.pypi-dependencies]
+samna = "*"
+
+[target.osx-arm64.pypi-dependencies]
+samna = "*"
+
+[target.osx-64.pypi-dependencies]
+samna = "*"
+
+[target.osx-64.dependencies]
+numpy = "<2"
+
+[feature.e2vid]
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+system-requirements = {cuda = "12"}
+
+[feature.e2vid.dependencies]
+python = "<=3.11"
+numpy = ">=1.6.0,<1.20"
+pandas = "*"
+opencv = "*"
+scipy = "*"
+pyyaml = "*"
+h5py = "*"
+requests = "*"
+tqdm = "*"
+matplotlib = "*"
+pillow = "*"
 cuda-version = "12.*"
 pytorch-gpu = "*"
 cuda-cudart-dev = "*"
@@ -63,15 +121,3 @@ libcufile-dev = "*"
 libcufft-dev = "*"
 libcurand-dev = "*"
 libcusolver-dev = "*"
-
-[target.linux-64.pypi-dependencies]
-samna = "*"
-
-[target.osx-arm64.pypi-dependencies]
-samna = "*"
-
-[target.osx-64.pypi-dependencies]
-samna = "*"
-
-[target.osx-64.dependencies]
-numpy = "<2"

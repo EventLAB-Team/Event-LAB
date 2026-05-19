@@ -12,24 +12,93 @@ dataset:
 sequences:
   R0_FA0:
     data:
-      url: "https://deepblue.lib.umich.edu/data/downloads/7m01bm508"
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R0_FA0/R0_FA0.hdf5"
     ground_truth:
       available: true
-      url: "https://deepblue.lib.umich.edu/data/downloads/b2773w665"
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R0_FA0/R0_FA0_ground_truth.h5"
     hot_pixel:
       available: false
       url: ""
   
   R0_FS0:
     data:
-      url: "https://deepblue.lib.umich.edu/data/downloads/m900nv28c"
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R0_FS0/R0_FS0.h5"
     ground_truth:
       available: true
-      url: "https://deepblue.lib.umich.edu/data/downloads/g158bj163"
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R0_FS0/R0_FS0_ground_truth.h5"
+    hot_pixel:
+      available: false
+      url: ""
+
+  R0_FN0:
+    data:
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R0_FN0/R0_FN0.hdf5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R0_FN0/R0_FN0_ground_truth.h5"
     hot_pixel:
       available: false
       url: ""
     
+  R0_RA0:
+    data:
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R0_RA0/R0_RA0.hdf5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R0_RA0/R0_RA0_ground_truth.h5"
+    hot_pixel:
+      available: false
+      url: ""
+
+  R0_RN0:
+    data:
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R0_RN0/R0_RN0.h5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R0_RN0/R0_RN0_ground_truth.h5"
+    hot_pixel:
+      available: false
+      url: ""
+
+  R0_RS0:
+    data:
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R0_RS0/R0_RS0.hdf5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R0_RS0/R0_RS0_ground_truth.h5"
+    hot_pixel:
+      available: false
+      url: ""
+
+  R1_DA0:
+    data:
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R1_DA0/R1_DA0.h5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R1_DA0/R1_DA0_ground_truth.h5"
+    hot_pixel:
+      available: false
+      url: ""
+
+  R1_FA0:
+    data:
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R1_FA0/R1_FA0.h5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R1_FA0/R1_FA0_ground_truth.h5"
+    hot_pixel:
+      available: false
+      url: ""
+  
+  R1_RA0:
+    data:
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R1_RA0/R1_RA0.h5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/EventLAB/NSAVP/resolve/main/R1_RA0/R1_RA0_ground_truth.h5"
+    hot_pixel:
+      available: false
+      url: ""
   
 # Formatting information for the dataset
 format:

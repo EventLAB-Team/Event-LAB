@@ -4,9 +4,10 @@ import numpy as np
 from skimage.transform import resize
 
 from baselines.VPR_Tutorial.evaluation.metrics import recallAtK, createPR
-from utils.functional import create_GTtol
+from datasets.groundtruths import create_GTtol_by_distance
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
+from loguru import logger
 
 def overlay_matches_on_array(
     array,
@@ -150,15 +151,12 @@ class EventBaseline:
                                 preserve_range=True, anti_aliasing=False)
                     # Apply ground truth tolerance
                     GT = (GT > 0.5).astype(int)
-                    GT_tol = create_GTtol(GT, tolerance)
-                else:
-                    GT_tol = create_GTtol(GThard, tolerance)
-                r = recallAtK(array, GT_tol, K=k)
+                r = recallAtK(array, GT, K=k)
                 recalls.append(np.round(r, 2))
             
             overlay_rgb, preds, tp, fp, fn = overlay_matches_on_array(
                 array=array,
-                GThard=GT_tol,
+                GThard=GT,
                 top_k=1,                 # set to 1 to get single predicted ref per query
                 pred_mode="per_column",  # important: choose 'per_column' to select predictions per query
                 marker_size=20,
@@ -168,12 +166,12 @@ class EventBaseline:
             )
 
             try:
-                P, R = createPR(array, GT_tol, matching='single', n_thresh=100)
+                P, R = createPR(array, GT, matching='single', n_thresh=100)
                 P = np.asarray(P); R = np.asarray(R)
                 idx = np.argsort(R)
                 aupr = float(np.trapz(P[idx], R[idx]))
             except Exception as e:
-                print(f"  -> Error computing PR for {name}: {e}")
+                logger.error(f"  -> Error computing PR for {name}: {e}")
                 P, R, aupr = np.array([]), np.array([]), np.nan
 
             if table is not None:
@@ -192,9 +190,9 @@ class EventBaseline:
             })
             pr_curves[(ref_query, name)] = (P, R)
 
-        if table is not None:
-            print(table)
-        
+            if table is not None:
+                logger.info("\n{}", table.get_string())
+
         return rows, pr_curves
     
     def save_results(self, rows, pr_curves, run_name, ref_query):
@@ -451,4 +449,4 @@ class EventBaseline:
                 update_agg_cell(ws_sum, r_idx, hdr_sum, m, row.get(m))
 
         wb.save(excel_path)
-        print(f"Saved Excel workbook to: {excel_path}")
+        logger.info(f"Saved Excel workbook to: {excel_path}")

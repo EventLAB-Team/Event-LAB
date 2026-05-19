@@ -1,0 +1,5 @@
+# Configuration for the LENS baseline
+dims: [28, 28]
+sequence_length: 10
+timebin: 1000
+feature_multiplier: 2

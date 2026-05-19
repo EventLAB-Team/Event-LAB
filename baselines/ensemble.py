@@ -15,7 +15,7 @@ class ensemble_baseline(EventBaseline):
         # Check if the baseline repository is already cloned
         self.repo_path = "./baselines/ensemble"
         # Baseline URL
-        self.url = "https://github.com/Tobias-Fischer/ensemble-event-vpr.git"
+        self.url = "https://github.com/AdamDHines/ensemble-event-vpr.git"
         if not os.path.exists(self.repo_path):
             clone_repo(self.url, destination=self.repo_path)
         self.baseline_config_path = './baselines/ensemble.yaml'
@@ -55,10 +55,12 @@ class ensemble_baseline(EventBaseline):
 
         # Determine the timewindows to use based on the frame generator
         if frame_accumulator == 'eventcount':
-            self.windows = config['num_events']
+            self.num_events = config['num_events']
+            self.windows = []
         else:
             self.windows = config['timewindows']
-            
+            self.num_events = []
+
         # Construct a list of all reference and query directories for each timewindow and num_events from a loop
         self.ref_directories = []
         self.query_directories = []
@@ -76,6 +78,7 @@ class ensemble_baseline(EventBaseline):
                 self.query_name, 
                 f'{self.query_name}-{frame_generator}-{window}',
                 f'{self.image_subfolder}'))
+            
         if self.num_events:
             for num in self.num_events:
                 self.ref_directories.append(os.path.join(
@@ -185,7 +188,7 @@ class ensemble_baseline(EventBaseline):
         # Build the command as a single string
         eval_cmd_str = (
                 # Include command line arugments specific to the baseline
-                f'python ./baselines/ensemble/run_eevpr.py '
+                f'python -u ./baselines/ensemble/run_eevpr.py '
                 f'-ds "{self.dataset}" '
                 f'-r {self.ref_name} '
                 f'-q {self.query_name} '
@@ -202,28 +205,12 @@ class ensemble_baseline(EventBaseline):
         else:
             self.eval_cmd = ["pixi", "run", "bash", "-c", eval_cmd_str]
 
-    def run(self, timeout=None):
+    def run(self):
         """Start baseline, capture output, keep handle in self.proc."""
         print(f"Running baseline with command: {' '.join(self.eval_cmd)}")
-        kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.PIPE, "text": True}
-        if os.name == "nt":
-            kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-        else:
-            kwargs["preexec_fn"] = os.setsid
-        self.proc = subprocess.Popen(self.eval_cmd, **kwargs)
-        try:
-            out, err = self.proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            # timed out: attempt cleanup and return whatever we can
-            self.cleanup()
-            out, err = "", ""
-        self.stdout = out
-        self.stderr = err
-        print("STDOUT:", out)
-        if err:
-            print("STDERR:", err)
-        if getattr(self, "proc", None) and self.proc.returncode != 0:
-            raise RuntimeError(f"Baseline evaluation failed with return code {self.proc.returncode}")
+        result = subprocess.run(self.eval_cmd, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"LENS evaluation failed with return code {result.returncode}")
 
     def parse_results(self, GT):
         """

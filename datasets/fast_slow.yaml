@@ -1,0 +1,86 @@
+---
+# Configuration file for the NYC-Event-VPR dataset
+dataset:
+  name: fast_slow
+  version: "1.0.0"
+  description: "Event-based Visual Place Recognition dataset with fast, medium, and slow speeds"
+  base_url: "https://huggingface.co/datasets/gokulbnr/QCR-Fast-Slow-Event-Dataset"
+  camera: "DAVIS346"
+  resolution: [346, 260]  # Width, Height
+
+# Sequence definitions with individual download links for data, ground truth, and hot pixels
+sequences:
+  q_high1:
+    data:
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/dvs/h5/c_h_qry.hdf5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/odom/c_h_qry.parquet"
+    hot_pixel:
+      available: false
+      url: ""
+  
+  r_high1:
+    data:
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/dvs/h5/c_h_ref.hdf5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/odom/c_h_ref.parquet"
+    hot_pixel:
+      available: false
+      url: ""
+  
+  q_med1:
+    data:
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/dvs/h5/c_h_qry.hdf5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/odom/c_h_qry.parquet"
+    hot_pixel:
+      available: false
+      url: ""
+  
+  r_med1:
+    data:
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/dvs/h5/c_h_ref.hdf5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/odom/c_h_ref.parquet"
+    hot_pixel:
+      available: false
+      url: ""
+
+  q_low1:
+    data:
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/dvs/h5/c_h_qry.hdf5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/odom/c_h_qry.parquet"
+    hot_pixel:
+      available: false
+      url: ""
+  
+  r_low1:
+    data:
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/dvs/h5/c_h_ref.hdf5"
+    ground_truth:
+      available: true
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/odom/c_h_ref.parquet"
+    hot_pixel:
+      available: false
+      url: ""
+
+    
+  
+# Formatting information for the dataset
+format:
+  data: 
+    format: "hdf5"  # Data format for the sequences
+    timestamp_val: "us"
+  ground_truth: "parquet"  # Format for ground truth data
+  hot_pixel: ""  # Format for hot pixel data
+
+other:
+  offset:
+    q_med1: 10000
+    r_med1: 10000

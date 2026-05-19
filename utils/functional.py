@@ -152,9 +152,6 @@ def _apply_time_filter_to_files(
     # ----- Fallback: seconds .txt -----
     if source is None:
         if not txt_path.exists():
-            warnings.warn(
-                f"Neither {ticks_filename} nor {ticks_text_name} available in {dirpath} — skipping time filtering"
-            )
             return {
                 'files': files_list,
                 'kept_idx': list(range(orig_len)),

@@ -40,7 +40,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from scipy import interpolate
-from datasets.get_data import get_dataset
 
 
 # =============================================================================
@@ -55,12 +54,13 @@ def _to_seconds(values) -> np.ndarray:
     v = np.asarray(values)
 
     if np.issubdtype(v.dtype, np.datetime64):
-        t_s = (v.astype("datetime64[ns]").astype("int64").astype(np.float64)) * 1e-9
+        t_s = (v.astype("datetime64[ns]").astype("int64").astype(np.float64)) * 1e-6
     else:
         v = v.astype(np.float64)
         median_val = np.nanmedian(v)
 
         # Very large -> likely ns/us/ms; otherwise treat as seconds (epoch or relative)
+        # print which one it uses
         if median_val > 1e14:      # nanoseconds
             t_s = v / 1e9
         elif median_val > 1e11:    # microseconds
@@ -108,6 +108,42 @@ def create_GTtol(GT: np.ndarray, distance: int = 2) -> np.ndarray:
             start_row = max(row - distance, 0)
             end_row = min(row + distance + 1, num_rows)
             GTtol[start_row:end_row, col] = 1
+    return GTtol
+
+def create_GTtol_by_distance(
+    GT: np.ndarray,
+    ref_dist_m: np.ndarray,
+    tol_m: float,
+) -> np.ndarray:
+    """
+    Vertical dilation in *meters* instead of rows.
+
+    GT:         (R, Q) binary matrix with exactly 0 or 1 '1' per column.
+    ref_dist_m: (R,) cumulative distance [m] along reference route for each row.
+    tol_m:      tolerance in meters (e.g., 25.0).
+
+    For each query column j, we locate its matched reference row i (where GT[i, j] == 1),
+    then mark all rows r where |ref_dist_m[r] - ref_dist_m[i]| <= tol_m as positive.
+    """
+    R, Q = GT.shape
+    ref_dist_m = np.asarray(ref_dist_m, dtype=np.float64)
+    GTtol = np.zeros_like(GT, dtype=np.uint8)
+
+    if R == 0 or Q == 0:
+        return GTtol
+
+    for j in range(Q):
+        col = GT[:, j]
+        idx = np.flatnonzero(col)
+        if idx.size == 0:
+            continue  # no match in this column
+
+        center_idx = idx[0]
+        center_dist = ref_dist_m[center_idx]
+
+        mask = np.abs(ref_dist_m - center_dist) <= float(tol_m)
+        GTtol[mask, j] = 1
+
     return GTtol
 
 
@@ -464,25 +500,94 @@ def qcr_event_ground_truth(config, dataset_config, reference_name, query_name,
                            gt_tolerance=2):
     """
     Build pseudo GT via % of route completed using dataset_config['other']['gt_times'] knots.
+    Uses generated frame-store metadata only; it does not create or load frame arrays.
     Rescales frame timelines to span GT durations (decouples frame count vs physical time).
     """
     def _timewindow_str(v):
         return str(v).replace(".", "_") if isinstance(v, float) else str(v)
 
-    def _count_npy(folder):
-        return len([f for f in os.listdir(folder) if f.endswith(".npy")]) if os.path.isdir(folder) else 0
+    def _count_legacy_frames(folder):
+        if not os.path.isdir(folder):
+            return 0
+        return len([
+            f for f in os.listdir(folder)
+            if f.startswith("frame_") and f.endswith(".npy")
+        ])
 
-    def _load_eff_ms(frames_dir, fallback_ms=None):
+    def _load_metadata(frames_dir):
         meta_path = os.path.join(frames_dir, "metadata.json")
         if os.path.isfile(meta_path):
             with open(meta_path, "r") as f:
-                m = json.load(f)
-            eff = m.get("derived_timewindow_ms", m.get("timewindow_ms"))
-            if eff is not None:
-                return float(eff)
-        if fallback_ms is None:
-            raise ValueError(f"No metadata.json with (derived_)timewindow_ms in {frames_dir}")
-        return float(fallback_ms)
+                return json.load(f)
+        return {}
+
+    def _resolve_h5_path(frames_dir, metadata):
+        storage_file = metadata.get("storage_file", "frames.h5")
+        candidates = [
+            os.path.join(frames_dir, storage_file),
+            os.path.join(frames_dir, "frames.h5"),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        return None
+
+    def _frame_store_info(frames_dir, fallback_ms=None):
+        metadata = _load_metadata(frames_dir)
+        n_frames = metadata.get("total_frames")
+        eff_ms = metadata.get("derived_timewindow_ms", metadata.get("timewindow_ms"))
+
+        h5_path = _resolve_h5_path(frames_dir, metadata)
+        if h5_path is not None:
+            try:
+                import h5py
+
+                with h5py.File(h5_path, "r") as h5:
+                    if "frames" not in h5:
+                        raise KeyError(f"{h5_path} does not contain dataset '/frames'.")
+
+                    n_frames = int(h5["frames"].shape[0])
+
+                    ticks_per_second = h5.attrs.get("ticks_per_second", None)
+                    window_ticks = h5.attrs.get("window_ticks", None)
+                    if ticks_per_second is not None and window_ticks is not None:
+                        ticks_per_second = float(ticks_per_second)
+                        window_ticks = float(window_ticks)
+                        if np.isfinite(ticks_per_second) and ticks_per_second > 0:
+                            eff_ms = (window_ticks / ticks_per_second) * 1000.0
+            except ImportError:
+                # metadata.json is enough for GT sizing, and keeps this path usable
+                # in lightweight environments that do not have h5py imported.
+                pass
+
+        if n_frames is None:
+            n_frames = _count_legacy_frames(frames_dir)
+
+        n_frames = int(n_frames or 0)
+        if n_frames <= 0:
+            raise ValueError(
+                f"Missing frame store in {frames_dir}. Expected metadata.json, "
+                "frames.h5, or legacy frame_*.npy files."
+            )
+
+        if eff_ms is None:
+            if fallback_ms is None:
+                raise ValueError(f"No (derived_)timewindow_ms metadata in {frames_dir}")
+            eff_ms = fallback_ms
+
+        return n_frames, float(eff_ms)
+
+    def _validate_knots(name, knots):
+        if len(knots) < 2:
+            raise ValueError(f"Need at least two GT time knots for {name}.")
+        knots = np.asarray(knots, dtype=float)
+        if not np.all(np.isfinite(knots)):
+            raise ValueError(f"GT time knots for {name} contain non-finite values.")
+        if np.any(np.diff(knots) < 0):
+            raise ValueError(f"GT time knots for {name} must be monotonic.")
+        if knots[-1] <= 0:
+            raise ValueError(f"Last GT time knot for {name} must be positive.")
+        return knots
 
     def _frame_times_rescaled(n_frames, eff_ms, gt_last_s):
         if n_frames <= 0:
@@ -494,33 +599,20 @@ def qcr_event_ground_truth(config, dataset_config, reference_name, query_name,
         t = t_naive * scale
         return np.clip(t, 0.0, float(gt_last_s))
 
-    dataset_name = "qcr_event"
-    qcr_config = config.copy()
-    qcr_config['timewindows'] = [1000]
-    qcr_config['frame_generator'] = 'frames'
-    qcr_config['frame_accumulator'] = 'polarity'
-    _ = get_dataset(qcr_config, dataset_name, reference_name)
-    _ = get_dataset(qcr_config, dataset_name, query_name)
-
     timewindow_str = _timewindow_str(timewindow)
     ref_dir = os.path.join(config['data_path'], 'qcr_event', reference_name,
                            f"{reference_name}-{config['frame_generator']}-{timewindow_str}")
     query_dir = os.path.join(config['data_path'], 'qcr_event', query_name,
                              f"{query_name}-{config['frame_generator']}-{timewindow_str}")
 
-    num_ref_files = _count_npy(ref_dir)
-    num_query_files = _count_npy(query_dir)
-    if num_ref_files <= 0 or num_query_files <= 0:
-        raise ValueError(f"Missing frames in {ref_dir} ({num_ref_files}) or {query_dir} ({num_query_files}).")
-
     nominal_ms = float(timewindow) if isinstance(timewindow, (int, float)) else 1000.0
 
-    eff_ref_ms = _load_eff_ms(ref_dir, fallback_ms=nominal_ms)
-    eff_qry_ms = _load_eff_ms(query_dir, fallback_ms=nominal_ms)
+    num_ref_files, eff_ref_ms = _frame_store_info(ref_dir, fallback_ms=nominal_ms)
+    num_query_files, eff_qry_ms = _frame_store_info(query_dir, fallback_ms=nominal_ms)
 
     try:
-        ref_knots = dataset_config['other']['gt_times'][reference_name]
-        qry_knots = dataset_config['other']['gt_times'][query_name]
+        ref_knots = _validate_knots(reference_name, dataset_config['other']['gt_times'][reference_name])
+        qry_knots = _validate_knots(query_name, dataset_config['other']['gt_times'][query_name])
     except KeyError as e:
         raise KeyError(f"GT times missing for {e.args[0]} in dataset_config['other']['gt_times']")
 
@@ -583,17 +675,19 @@ def _frame_centers_by_n(T_end_s: float, n_frames: int) -> np.ndarray:
     return (np.arange(n, dtype=float) + 0.5) * (T_end_s / n)
 
 
-def _percent_route_over_time(pose: np.ndarray, kind: str) -> Tuple[np.ndarray, np.ndarray]:
+def _percent_route_over_time(pose: np.ndarray, kind: str) -> Tuple[np.ndarray, np.ndarray, float]:
     """
     Given pose (N,3) = [x|lat, y|lon, t], return:
       times: (N,), seconds (strictly increasing, starts near 0)
       perc:  (N,), route completion percent [0..100]
+      total_dist_m: total traveled distance in meters (0 if stationary)
     Uses cumulative distance (Haversine or Euclidean). If stationary, falls back to time-based %.
     """
     if pose.size == 0 or len(pose) < 2:
         times = pose[:, 2] if pose.size else np.zeros((0,), dtype=float)
         perc  = np.zeros_like(times)
-        return times, perc
+        total_dist_m = 0.0
+        return times, perc, total_dist_m
 
     xy = pose[:, :2].astype(np.float64)
     t  = pose[:, 2].astype(np.float64)
@@ -609,12 +703,16 @@ def _percent_route_over_time(pose: np.ndarray, kind: str) -> Tuple[np.ndarray, n
         d     = np.concatenate([[0.0], np.cumsum(step)])
 
     total = float(d[-1])
+    total_dist_m = total
+
     if total < 1e-6:
+        # Stationary or almost; fall back to time-based percentage
         T = float(max(t[-1], 1e-9))
         perc = (t / T) * 100.0
     else:
         perc = (d / total) * 100.0
-    return t, np.clip(perc, 0.0, 100.0)
+
+    return t, np.clip(perc, 0.0, 100.0), total_dist_m
 
 
 def _percent_at_times(times_src: np.ndarray, perc_src: np.ndarray, times_query: np.ndarray) -> np.ndarray:
@@ -648,21 +746,29 @@ def ground_truth_from_pose_only(config,
                                 n_frames_ref: int | None = None,
                                 n_frames_qry: int | None = None,
                                 out_dir: str | None = None,
-                                out_basename: str | None = None) -> str:
+                                out_basename: str | None = None,
+                                ref_frame_times: np.ndarray | None = None,
+                                qry_frame_times: np.ndarray | None = None) -> str:
     """
     Build GT without generating frames:
       1) load ref/qry pose (lat/lon or x/y) with timestamps
       2) compute route-completion % over time from cumulative distance
-      3) synthesize *virtual* frame centers by dt (from timewindow_ms) or by n_frames
-      4) nearest-% matching + vertical dilation
-    Returns: path to saved .npy (and a .png alongside).
+      3) choose frame centres in time:
+         - if ref_frame_times/qry_frame_times is given: use those directly
+         - elif n_frames_ref/qry is given: use evenly spaced centres in [0, T_end]
+         - else: use timewindow_ms to define centres
+      4) nearest-% matching + (optional) distance-based vertical dilation
     """
-    gt_ext = dataset_config['format']['ground_truth']  # e.g., "parquet", "h5", "nmea", "txt"
+    gt_ext = dataset_config['format']['ground_truth']
 
-    ref_pose_path = os.path.join(config['data_path'], dataset_name, reference_name,
-                                 f"{reference_name}_ground_truth.{gt_ext}")
-    qry_pose_path = os.path.join(config['data_path'], dataset_name, query_name,
-                                 f"{query_name}_ground_truth.{gt_ext}")
+    ref_pose_path = os.path.join(
+        config['data_path'], dataset_name, reference_name,
+        f"{reference_name}_ground_truth.{gt_ext}"
+    )
+    qry_pose_path = os.path.join(
+        config['data_path'], dataset_name, query_name,
+        f"{query_name}_ground_truth.{gt_ext}"
+    )
 
     if not os.path.exists(ref_pose_path):
         raise FileNotFoundError(f"Missing reference pose: {ref_pose_path}")
@@ -672,19 +778,33 @@ def ground_truth_from_pose_only(config,
     ref_pose, ref_kind, _ = _load_pose_any(ref_pose_path)
     qry_pose, qry_kind, _ = _load_pose_any(qry_pose_path)
 
-    ref_t, ref_pct = _percent_route_over_time(ref_pose, ref_kind)
-    qry_t, qry_pct = _percent_route_over_time(qry_pose, qry_kind)
+    ref_t, ref_pct, ref_total_m = _percent_route_over_time(ref_pose, ref_kind)
+    qry_t, qry_pct, qry_total_m = _percent_route_over_time(qry_pose, qry_kind)
 
-    if n_frames_ref is not None:
+    # -------------------------------------------------------------------------
+    # Frame centres in time
+    # -------------------------------------------------------------------------
+    # Reference
+    if ref_frame_times is not None:
+        ref_centers = np.asarray(ref_frame_times, dtype=float)
+    elif n_frames_ref is not None:
         ref_centers = _frame_centers_by_n(ref_t[-1], int(n_frames_ref))
     else:
+        if timewindow_ms is None:
+            raise ValueError("timewindow_ms must be provided if n_frames_ref and ref_frame_times are None")
         ref_centers = _frame_centers_by_dt(ref_t[-1], float(timewindow_ms) / 1000.0)
 
-    if n_frames_qry is not None:
+    # Query
+    if qry_frame_times is not None:
+        qry_centers = np.asarray(qry_frame_times, dtype=float)
+    elif n_frames_qry is not None:
         qry_centers = _frame_centers_by_n(qry_t[-1], int(n_frames_qry))
     else:
+        if timewindow_ms is None:
+            raise ValueError("timewindow_ms must be provided if n_frames_qry and qry_frame_times are None")
         qry_centers = _frame_centers_by_dt(qry_t[-1], float(timewindow_ms) / 1000.0)
 
+    # Route-% at those frame centres
     ref_pct_frames = _percent_at_times(ref_t, ref_pct, ref_centers)
     qry_pct_frames = _percent_at_times(qry_t,  qry_pct,  qry_centers)
 
@@ -692,18 +812,29 @@ def ground_truth_from_pose_only(config,
     ref_pct_frames = np.maximum.accumulate(ref_pct_frames)
     qry_pct_frames = np.maximum.accumulate(qry_pct_frames)
 
+    # Nearest-% matching
     best_ref_idx = _nearest_indices_monotonic(ref_pct_frames, qry_pct_frames)
 
+    # Base GT
     R, Q = len(ref_pct_frames), len(qry_pct_frames)
     GT = np.zeros((R, Q), dtype=np.uint8)
     GT[best_ref_idx, np.arange(Q)] = 1
 
+    # Distance-based tolerance in metres along reference route
+    if gt_tolerance is not None and gt_tolerance > 0 and ref_total_m > 0.0:
+        ref_dist_frames_m = (ref_pct_frames / 100.0) * ref_total_m
+        GT = create_GTtol_by_distance(
+            GT,
+            ref_dist_frames_m,
+            tol_m=float(gt_tolerance),
+        )
+
+    # Output
     if out_dir is None:
         out_dir = os.path.join(config['data_path'], dataset_name, "ground_truth")
     os.makedirs(out_dir, exist_ok=True)
 
     if out_basename is None:
-        hint = f"{int(timewindow_ms)}ms" if (n_frames_ref is None and n_frames_qry is None) else f"{R}x{Q}frames"
         out_basename = f"{reference_name}_{query_name}_GT"
 
     out_npy = os.path.join(out_dir, f"{out_basename}.npy")
@@ -712,14 +843,13 @@ def ground_truth_from_pose_only(config,
     plt.figure(figsize=(10, 8))
     plt.imshow(GT, cmap='gray', aspect='auto')
     plt.title('Pseudo Ground Truth (pose-only fast path)')
-    plt.xlabel('Query (virtual frames)')
-    plt.ylabel('Reference (virtual frames)')
+    plt.xlabel('Query (frames)')
+    plt.ylabel('Reference (frames)')
     plt.tight_layout()
     plt.savefig(out_npy.replace('.npy', '.png'))
     plt.close()
 
     return out_npy
-
 
 # =============================================================================
 # Unified entry point
@@ -750,6 +880,22 @@ def generate_ground_truth(config,
     gt_dir = os.path.join(config['data_path'], dataset_name, 'ground_truth')
     os.makedirs(gt_dir, exist_ok=True)
 
+    # If the config file frame_accumulator is "eventcount", get the number of frames for q and r
+    if config.get('frame_accumulator', '') == 'eventcount':
+        ref_frames_dir = os.path.join(config['data_path'], dataset_name, reference_name,
+                                    f"{reference_name}-{config['frame_generator']}-{config['num_events'][0]}")
+        qry_frames_dir = os.path.join(config['data_path'], dataset_name, query_name,
+                                    f"{query_name}-{config['frame_generator']}-{config['num_events'][0]}")
+
+        ref_ticks = np.load(os.path.join(ref_frames_dir, "event_frame_times_ticks.npy"))
+        qry_ticks = np.load(os.path.join(qry_frames_dir, "event_frame_times_ticks.npy"))
+        # Convert ticks -> seconds, relative to start
+        ref_frame_times_s = (ref_ticks - ref_ticks[0]) * 1e-9
+        qry_frame_times_s = (qry_ticks - qry_ticks[0]) * 1e-9
+    else:
+        ref_frame_times_s = None
+        qry_frame_times_s = None
+        
     # Pose-only fast path (default)
     if fast and gps_available:
         return ground_truth_from_pose_only(
@@ -760,9 +906,11 @@ def generate_ground_truth(config,
             query_name=device_safe_str(query_name),
             timewindow_ms=float(timewindow),
             gt_tolerance=int(config.get('ground_truth_tolerance', 2)),
-            n_frames_ref=n_frames_ref,
-            n_frames_qry=n_frames_qry,
-            out_dir=gt_dir
+            n_frames_ref=None,                     # we’re using real frame times, so ignore this
+            n_frames_qry=None,
+            out_dir=gt_dir,
+            ref_frame_times=ref_frame_times_s,
+            qry_frame_times=qry_frame_times_s,
         )
 
     # Dataset-specific (qcr_event) fallback

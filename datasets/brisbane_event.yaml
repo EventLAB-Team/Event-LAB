@@ -10,6 +10,16 @@ dataset:
 
 # Sequence definitions with individual download links for data, ground truth, and hot pixels
 sequences:
+  sunset1:
+    data:
+      url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-21-17-03-03.hdf5?download=true"
+    ground_truth:
+      available: true
+      url: "https://zenodo.org/records/4302805/files/20200421_170039-sunset1_concat.nmea?download=1"
+    hot_pixel:
+      available: true
+      url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-21-17-03-03_hot_pixels.txt?download=true"
+
   sunset2:
     data:
       url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-22-17-24-21.hdf5?download=true"
@@ -19,6 +29,26 @@ sequences:
     hot_pixel:
       available: true
       url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-22-17-24-21_hot_pixels.txt?download=true"
+
+  daytime:
+    data:
+      url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-24-15-12-03.hdf5?download=true"
+    ground_truth:
+      available: true
+      url: "https://zenodo.org/records/4302805/files/20200424_151015-daytime_concat.nmea?download=1"
+    hot_pixel:
+      available: true
+      url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-24-15-12-03_hot_pixels.txt?download=true"
+
+  morning:
+    data:
+      url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-28-09-14-11.hdf5?download=true"
+    ground_truth:
+      available: true
+      url: "https://zenodo.org/records/4302805/files/20200428_091154-morning_concat.nmea?download=1"
+    hot_pixel:
+      available: true
+      url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-28-09-14-11_hot_pixels.txt?download=true"
 
   sunrise:
     data:
@@ -30,16 +60,31 @@ sequences:
       available: true
       url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-29-06-20-23_hot_pixels.txt?download=true"
 
+  night:
+    data:
+      url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-27-18-13-29.hdf5?download=true"
+    ground_truth:
+      available: true
+      url: "https://zenodo.org/records/4302805/files/20200427_181204-night_concat.nmea?download=1"
+    hot_pixel:
+      available: true
+      url: "https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr/resolve/main/dvs_vpr_2020-04-27-18-13-29_hot_pixels.txt?download=true"
+
 # Formatting information for the dataset
 format:
   data: 
     format: "hdf5"  # Data format for the sequences
     timestamp_val: "ns"
+    time_scale: 1e-9
   ground_truth: "nmea"  # Format for ground truth data
   hot_pixel: "txt"  # Format for hot pixel data
 
 # Other dataset configurations
 other:
   offset:
+    sunset1: 1587452582.35
     sunset2: 1587540271.65
+    daytime: 1587705130.80
+    morning: 1588029265.73
     sunrise: 1588105232.91
+    night: 1587975221.10

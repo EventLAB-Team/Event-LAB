@@ -1,7 +1,9 @@
 import os, sys, yaml
 
-from baselines.get_baseline import get_baseline 
+from utils import utils
+from loguru import logger
 from datasets.get_data import get_dataset
+from baselines.get_baseline import get_baseline 
 from datasets.groundtruths import generate_ground_truth
 
 def main():
@@ -12,6 +14,9 @@ def main():
     # Get the experimental details
     baseline_name = sys.argv[1]
     dataset_name = sys.argv[2]
+
+    # Start the Event-LAB banner
+    utils.start(baseline_name, dataset_name)
 
     # Ensure dataset contains .py and .yaml configuration files
     yaml_path = os.path.join("datasets", f"{dataset_name}.yaml")
@@ -24,31 +29,34 @@ def main():
             reference_name = sys.argv[3]
             query_name = sys.argv[4]
 
+            # Print experimental details
+            logger.info(f"Running VPR baseline: {baseline_name}")
+            logger.info(f"Dataset: {dataset_name}")
+            logger.info(f"Reference sequence: {reference_name}")
+            logger.info(f"Query sequence: {query_name}")
+            logger.info('')
+
             # Load general config and set the dataset (will download, format, and construct data if not present)
-            reference_data = get_dataset(config, dataset_name, reference_name)
-            query_data = get_dataset(config, dataset_name, query_name)
+            reference = get_dataset(config, dataset_name, reference_name)
+            query = get_dataset(config, dataset_name, query_name)
 
             # Check for the existence of a ground truth for the reference and query datasets
             GT_file = (os.path.join(config['data_path'], dataset_name, 'ground_truth', f"{reference_name}_{query_name}_GT.npy"))
             
+            # Generate ground truth
             if not os.path.exists(GT_file):
-                # Generate ground truth if it does not exist
                 generate_ground_truth(config, 
                                     dataset_config, 
                                     dataset_name, 
                                     reference_name, 
                                     query_name, 
-                                    reference_data, 
-                                    query_data,
-                                    timewindow=1000, # Create ground-truth anchored to the 100 msec timewindow
+                                    reference, 
+                                    query,
+                                    timewindow=reference.timewindow_list[0],
                                     gps_available=dataset_config['sequences'][f'{reference_name}']['ground_truth']['available'])
 
-            # Check for existence of datasets, retrieve if not present
         except IndexError:
             raise ValueError("Not enough arguments provided. Expected: <baseline>, <dataset>, <reference>, <query>.")
-        
-    elif baseline_name in config["SLAM-Baselines"]: #TODO: Implement SLAM baselines
-        pass
 
     else:
         raise ValueError(f"Baseline {baseline_name} is not recognized. Please check the configuration.")
@@ -59,11 +67,13 @@ def main():
         raise FileNotFoundError(f"Baseline file for {baseline_name} is missing.")
     
     # Get the baseline instance
-    baseline = get_baseline(baseline_name)
+    baseline = get_baseline(baseline_name, config, dataset_config, reference, query)
 
-    for idx, timewindow in enumerate(reference_data.timewindow_list):
-        # Format the data for the baseline
-        baseline.format_data(config, dataset_config, reference_data, query_data, timewindow)
+    for _, timewindow in enumerate(reference.timewindow_list):
+
+        # Format the data for the baseline, if pre-generated
+        # if config['stream']:
+        baseline.format_data(config, dataset_config, reference, query, timewindow)
 
         # Build the execution command for the baseline
         baseline.build_execute(config, dataset_config, GT_file)

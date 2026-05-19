@@ -1,0 +1,5 @@
+# Configuration for the vprmethods baseline
+method: megaloc
+backbone: "ResNet50"
+descriptors_dimension: 512
+no_labels: true

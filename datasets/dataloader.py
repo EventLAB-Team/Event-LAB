@@ -1,4 +1,12 @@
-import os, yaml, h5py, requests
+import os, yaml, h5py, requests, time, re, hashlib
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Callable, Iterable, Optional
+
+from tqdm import tqdm
+from urllib.parse import unquote
+from loguru import logger
 
 import numpy as np
 from datasets.format_data import format_sequence_data, build_event_frames
@@ -50,6 +58,7 @@ class EventDataset():
         self.full_dataset_paths = []
         for seq in self.dataset_sequences:
             self.full_dataset_paths.append(os.path.join(self.dataset_path, seq))
+
         # Check for existence of a hot pixel file
         self.hot_pixel_file = os.path.join(self.config['data_path'],
                                            self.dataset_name,
@@ -60,53 +69,261 @@ class EventDataset():
             if self.data_config['sequences'][self.sequence_name]['hot_pixel']['available']:
                 # Download the hot pixel file if available
                 hot_pixel_url = self.data_config['sequences'][self.sequence_name]['hot_pixel']['url']
-                print(f"Downloading hot pixel file from {hot_pixel_url}")
+                logger.info(f"Downloading hot pixel file from {hot_pixel_url}")
                 response = requests.get(hot_pixel_url)
                 response.raise_for_status()
                 with open(self.hot_pixel_file, 'wb') as f:
                     f.write(response.content)
-                print(f"✓ Hot pixel file downloaded: {self.hot_pixel_file}")
+                logger.info(f"✓ Hot pixel file downloaded: {self.hot_pixel_file}")
         
         # Download the sequence data if raw data does not exist
         if not os.path.exists(self.dataset_raw):
             download_sequence_data(self.config, self.data_config, self.dataset_name, self.sequence_name)
+        
         # Format the data
         if not os.path.exists(self.dataset_formatted):
             format_sequence_data(self.config, self.data_config, self.dataset_name, self.sequence_name)
             # Get basic dataset info without loading all data
             self._load_dataset_metadata()
     
-        # Check if the reconstructed dataset exists, if not, create frames (count and/or reconstruction)
-        for idx, self.full_dataset_path in enumerate(self.full_dataset_paths):
-            if not os.path.exists(self.full_dataset_path):
+        # For non-streaming, check if the reconstructed dataset exists, if not, create frames (count and/or reconstruction)
+        for idx, full_dataset_path in enumerate(self.full_dataset_paths):
+            if self.config['stream']:
+                continue
+            if not os.path.exists(full_dataset_path):
                 self._load_dataset_metadata()
                 # Load hot pixels if available
                 self.hot_pixels = self._load_hot_pixels()
                 if self.max_events_list:
                     # Check and potentially create event frames
-                    self._handle_event_frames(self.full_dataset_path, 
+                    self._handle_event_frames(full_dataset_path, 
                                             self.timewindow_list[idx], 
                                             self.reconstruction_types[idx], 
                                             recon=self.config['frame_generator'],
                                             max_events=self.max_events_list[idx])
                 else:
-                    self._handle_event_frames(self.full_dataset_path, 
+                    self._handle_event_frames(full_dataset_path, 
                                             self.timewindow_list[idx], 
                                             self.reconstruction_types[idx], 
                                             recon=self.config['frame_generator'])
 
-        # download the ground truth, if available
-        if not os.path.exists(os.path.join(self.dataset_path, f"{self.sequence_name}_ground_truth.{self.data_config['format']['ground_truth']}")):
-            if self.data_config['sequences'][self.sequence_name]['ground_truth']['available']:
-                gt_url = self.data_config['sequences'][self.sequence_name]['ground_truth']['url']
-                print(f"Downloading ground truth from {gt_url}")
-                response = requests.get(gt_url)
-                response.raise_for_status()
-                gt_file = os.path.join(self.dataset_path, f"{self.sequence_name}_ground_truth.{self.data_config['format']['ground_truth']}")
-                with open(gt_file, 'wb') as f:
-                    f.write(response.content)
-                print(f"✓ Ground truth downloaded: {gt_file}")
 
+        # download the ground truth, if available
+        gt_ext = self.data_config['format']['ground_truth']
+        gt_file = os.path.join(
+            self.dataset_path,
+            f"{self.sequence_name}_ground_truth.{gt_ext}"
+        )
+
+        if (
+            not os.path.exists(gt_file)
+            and self.data_config['sequences'][self.sequence_name]['ground_truth']['available']
+        ):
+            gt_url = self.data_config['sequences'][self.sequence_name]['ground_truth']['url']
+            logger.info(f"Downloading ground truth from {gt_url}")
+
+            request_input = getattr(self, "request_input", False)
+            max_retries = 5
+
+            with requests.Session() as session:
+                session.headers.update(self._download_headers())
+
+                # Resolve Zenodo pretty URL -> actual file URL + metadata
+                # check if the gt_url contains "zenodo"
+                if "zenodo" in gt_url:
+                    resolved_url, resolved_size, resolved_checksum = self._resolve_zenodo_file(gt_url, session)
+                    size = resolved_size
+                else:
+                    resolved_url = gt_url
+                    try:
+                        response = requests.head(resolved_url, allow_redirects=True, timeout=30)
+                        response.raise_for_status()
+                        
+                        # Get the Content-Length header
+                        size_header = response.headers.get('Content-Length')
+                        if size_header:
+                            size = int(size_header)
+                        else:
+                            logger.warning("Server did not provide file size")
+                        
+                    except requests.RequestException as e:
+                        logger.error(f"Error checking file size: {e}")
+                    resolved_checksum = None
+
+                if request_input and size is not None:
+                    gb = size / (1024 * 1024 * 1024)
+                    resp = input(
+                        f"Download the ground truth ({gb:.2f}GB)? "
+                        "(yes / press Enter to confirm): "
+                    ).strip().lower()
+                    if resp not in ("", "yes"):
+                        raise Exception("Ground truth download cancelled by user.")
+
+                for attempt in range(max_retries):
+                    try:
+                        resume_pos = 0
+                        if os.path.exists(gt_file):
+                            resume_pos = os.path.getsize(gt_file)
+                            if size is not None and resume_pos == size:
+                                logger.info(f"Ground truth already completely downloaded: {gt_file}")
+                                break
+                            elif resume_pos > 0:
+                                logger.info(
+                                    f"Resuming ground truth download from "
+                                    f"{resume_pos / (1024 * 1024):.1f}MB"
+                                )
+
+                        headers = {}
+                        if resume_pos > 0:
+                            headers["Range"] = f"bytes={resume_pos}-"
+
+                        http_response = session.get(
+                            resolved_url,
+                            headers=headers,
+                            stream=True,
+                            allow_redirects=True,
+                            timeout=(30, 300),
+                        )
+                        http_response.raise_for_status()
+
+                        # If server ignored Range and returned full file, restart cleanly.
+                        if resume_pos > 0 and http_response.status_code != 206:
+                            logger.debug("Server did not honour Range request; restarting full download.")
+                            resume_pos = 0
+
+                        mode = "ab" if resume_pos > 0 else "wb"
+
+                        with open(gt_file, mode) as f, tqdm(
+                            desc=f"Download ground truth = {self.sequence_name}",
+                            total=size,
+                            initial=resume_pos,
+                            unit="B",
+                            unit_scale=True,
+                            unit_divisor=1024,
+                        ) as pbar:
+                            for chunk in http_response.iter_content(chunk_size=1024 * 1024):
+                                if not chunk:
+                                    continue
+                                f.write(chunk)
+                                pbar.update(len(chunk))
+
+                        # sanity check: file size
+                        final_size = os.path.getsize(gt_file)
+                        if size is not None and final_size != size:
+                            raise IOError(
+                                f"Downloaded size mismatch for {gt_file}: "
+                                f"expected {size}, got {final_size}"
+                            )
+
+                        # optional checksum verification if Zenodo metadata gave md5
+                        if resolved_checksum and resolved_checksum.startswith("md5:"):
+                            expected_md5 = resolved_checksum.split("md5:", 1)[1]
+                            actual_md5 = self._md5(gt_file)
+                            if actual_md5 != expected_md5:
+                                raise IOError(
+                                    f"MD5 mismatch for {gt_file}: "
+                                    f"expected {expected_md5}, got {actual_md5}"
+                                )
+
+                        logger.info(f"✓ Ground truth downloaded: {gt_file}")
+                        break
+
+                    except (
+                        requests.exceptions.RequestException,
+                        requests.exceptions.ChunkedEncodingError,
+                        requests.exceptions.ConnectionError,
+                        IOError,
+                    ) as e:
+                        logger.error(f"Ground truth download failed on attempt {attempt + 1}: {e}")
+
+                        if attempt < max_retries - 1:
+                            wait_time = 2 ** attempt
+                            logger.info(f"Retrying in {wait_time} seconds...")
+                            time.sleep(wait_time)
+                        else:
+                            logger.error(f"Download failed after {max_retries} attempts")
+                            if os.path.exists(gt_file):
+                                current_size = os.path.getsize(gt_file)
+                                logger.info(f"Partial file size: {current_size / (1024 * 1024):.1f}MB")
+                                logger.info("You can retry the download to resume from this point")
+                            raise
+
+                    except KeyboardInterrupt:
+                        logger.info("\nGround truth download interrupted by user.")
+                        if os.path.exists(gt_file):
+                            current_size = os.path.getsize(gt_file)
+                            logger.info(f"Partial file saved: {current_size / (1024 * 1024):.1f}MB")
+                        raise
+
+    def _download_headers(self):
+        headers = {
+            "User-Agent": "EventLAB/1.0 (+https://github.com/EventLAB-Team/Event-LAB)",
+            "Accept": "application/octet-stream,application/json;q=0.9,*/*;q=0.8",
+        }
+        token = os.getenv("ZENODO_API_TOKEN") or os.getenv("ZENODO_TOKEN")
+        if token:
+            headers["Authorization"] = f"Bearer {token}"
+        return headers
+
+
+    def _resolve_zenodo_file(self, url, session):
+        """
+        Resolve a Zenodo pretty file URL to the actual downloadable API file URL,
+        and return (download_url, size, checksum).
+        If it's not a Zenodo records/files URL, return the input URL unchanged.
+        """
+        ZENODO_FILE_RE = re.compile(r"^https?://(?:www\.)?zenodo\.org/records?/(\d+)/files/([^/?#]+)")
+        m = ZENODO_FILE_RE.match(url)
+        if not m:
+            return url, None, None
+
+        record_id = m.group(1)
+        wanted_name = unquote(m.group(2))
+
+        meta_url = f"https://zenodo.org/api/records/{record_id}"
+        r = session.get(meta_url, timeout=60, allow_redirects=True)
+        r.raise_for_status()
+        meta = r.json()
+
+        files = meta.get("files", [])
+        file_entry = None
+        for f in files:
+            key = f.get("key") or f.get("filename")
+            if key == wanted_name:
+                file_entry = f
+                break
+
+        if file_entry is None:
+            available = [f.get("key") or f.get("filename") for f in files]
+            raise FileNotFoundError(
+                f"Zenodo record {record_id} does not contain '{wanted_name}'. "
+                f"Available files: {available}"
+            )
+
+        links = file_entry.get("links", {})
+        download_url = (
+            links.get("self")
+            or links.get("content")
+            or links.get("download")
+        )
+        if not download_url:
+            raise RuntimeError(
+                f"Could not resolve a downloadable link for '{wanted_name}' "
+                f"from Zenodo record {record_id}"
+            )
+
+        size = file_entry.get("size")
+        checksum = file_entry.get("checksum")
+        return download_url, size, checksum
+
+
+    def _md5(self, path, chunk_size=1024 * 1024):
+        h = hashlib.md5()
+        with open(path, "rb") as f:
+            for chunk in iter(lambda: f.read(chunk_size), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    
     def _time_scale_from_config(self):
         """
         Read format->data->timestamp_val from self.data_config.
@@ -148,7 +365,6 @@ class EventDataset():
 
     def _load_dataset_metadata(self, *, rdcc_nbytes=64*1024*1024, rdcc_nslots=1_048_579,
                             max_tail_bytes=64*1024*1024, warn_chunk_bytes=256*1024*1024):
-        import os, h5py, numpy as np
 
         def _read_first_last_scalar_1d(dset):
             n = int(dset.shape[0])
@@ -277,7 +493,7 @@ class EventDataset():
                 tds = ev[tkey]
                 self.events_count = int(tds.shape[0])
                 if self.events_count == 0:
-                    print("Warning: No events found in dataset")
+                    logger.warning("No events found in dataset")
                     self.start_time = self.end_time = 0
                     self.duration_sec = 0.0
                     return
@@ -293,7 +509,7 @@ class EventDataset():
                 dset = ev
                 self.events_count = int(dset.shape[0])
                 if self.events_count == 0:
-                    print("Warning: No events found in dataset")
+                    logger.warning("No events found in dataset")
                     self.start_time = self.end_time = 0
                     self.duration_sec = 0.0
                     return
@@ -370,7 +586,7 @@ class EventDataset():
         scale = getattr(self, "time_scale", None)
         if not scale:
             # Fallback: assume nanoseconds if unknown (legacy), but warn
-            print("Warning: time_scale unknown; assuming 'ns'")
+            logger.warning("Warning: time_scale unknown; assuming 'ns'")
             scale = 1e9
         if unit == "s":   return int(round(value * scale))
         if unit == "ms":  return int(round(value * scale / 1e3))
@@ -411,7 +627,7 @@ class EventDataset():
             return width, height
         
         # Default fallback
-        print("Warning: Could not determine camera dimensions, using default 640x480")
+        logger.warning("Could not determine camera dimensions, using default 640x480")
         return 640, 480
     
     def _load_hot_pixels(self):
@@ -437,7 +653,7 @@ class EventDataset():
                         # Parse "x, y" format
                         parts = line.split(',')
                         if len(parts) != 2:
-                            print(f"Warning: Invalid format in hot pixels file line {line_num}: '{line}'")
+                            logger.warning(f"Invalid format in hot pixels file line {line_num}: '{line}'")
                             continue
                         
                         x = int(parts[0].strip())
@@ -447,10 +663,10 @@ class EventDataset():
                         if 0 <= x < self.width and 0 <= y < self.height:
                             hot_pixels.append((x, y))
                         else:
-                            print(f"Warning: Hot pixel ({x}, {y}) is out of sensor bounds ({self.width}x{self.height})")
-                            
+                            logger.warning(f"Hot pixel ({x}, {y}) is out of sensor bounds ({self.width}x{self.height})")
+
                     except ValueError as e:
-                        print(f"Warning: Could not parse line {line_num} in hot pixels file: '{line}' - {e}")
+                        logger.warning(f"Could not parse line {line_num} in hot pixels file: '{line}' - {e}")
                         continue
             
             if hot_pixels:
@@ -458,11 +674,11 @@ class EventDataset():
                 # Convert to numpy array for efficient filtering
                 return hot_pixels_array
             else:
-                print(f"No valid hot pixels found in {self.hot_pixels_file}")
+                logger.warning(f"No valid hot pixels found in {self.hot_pixels_file}")
                 return None
                 
         except Exception as e:
-            print(f"Error loading hot pixels file {self.hot_pixels_file}: {e}")
+            logger.error(f"Error loading hot pixels file {self.hot_pixels_file}: {e}")
             return None
     
     def _handle_event_frames(self, frames_dir, timewindow, window_type, recon=None, max_events=None):
@@ -520,19 +736,19 @@ class EventDataset():
             # sanity check: warn if absurd compared to duration we already computed
             try:
                 if hasattr(self, "duration_sec") and self.duration_sec > 0 and offset_sec > 10 * self.duration_sec:
-                    print(f"Warning: offset {offset_sec} s >> duration {self.duration_sec:.2f} s")
+                    logger.warning(f"offset {offset_sec} s >> duration {self.duration_sec:.2f} s")
             except Exception:
                 pass
-            print(f"Found offset for {self.sequence_name}: {offset_sec} seconds")
+            logger.info(f"Found offset for {self.sequence_name}: {offset_sec} seconds")
             return offset_sec
         except Exception as e:
-            print(f"Could not parse offset for {self.sequence_name}: {e}")
+            logger.error(f"Could not parse offset for {self.sequence_name}: {e}")
             return None
 
     def _estimate_and_confirm_frame_generation(self, frames_dir, timewindow_ms, offset_sec, window_type):
         # convert window to TICKS
         if not hasattr(self, "time_scale"):
-            print("Warning: time_scale unknown; assuming 'ns' for estimation")
+            logger.warning("time_scale unknown; assuming 'ns' for estimation")
             scale = 1e9
         else:
             scale = self.time_scale
@@ -546,7 +762,7 @@ class EventDataset():
 
         effective_duration_ticks = max(0, self.end_time - effective_start)
         if effective_duration_ticks <= 0:
-            print(f"Warning: No events after offset {offset_sec}, skipping frame generation")
+            logger.warning(f"No events after offset {offset_sec}, skipping frame generation")
             return
 
         estimated_frames = int(effective_duration_ticks // timewindow_ticks)
@@ -561,25 +777,25 @@ class EventDataset():
         
         # Estimate storage size
         estimated_size_mb = estimated_frames * self.width * self.height * bytes_per_pixel / (1024 * 1024)
-        
-        print(f"\n=== Event Frame Generation Estimation ===")
-        print(f"Time window: {timewindow_ms} ms")
-        print(f"Frame accumulator: {accumulator_type}")
-        print(f"Sequence offset: {offset_sec if offset_sec else 'None'}")
-        print(f"Effective duration: {effective_duration_sec:.2f} seconds")
-        print(f"Estimated frames: {estimated_frames:,}")
-        print(f"Frame resolution: {self.width} x {self.height}")
-        print(f"Estimated storage: {estimated_size_mb:.1f} MB")
-        
+
+        logger.info(f"\n=== Event Frame Generation Estimation ===")
+        logger.info(f"Time window: {timewindow_ms} ms")
+        logger.info(f"Frame accumulator: {accumulator_type}")
+        logger.info(f"Sequence offset: {offset_sec if offset_sec else 'None'}")
+        logger.info(f"Effective duration: {effective_duration_sec:.2f} seconds")
+        logger.info(f"Estimated frames: {estimated_frames:,}")
+        logger.info(f"Frame resolution: {self.width} x {self.height}")
+        logger.info(f"Estimated storage: {estimated_size_mb:.1f} MB")
+
         # Ask user for confirmation
         if self.config['request_input']:
             user_response = input(f"\nGenerate {estimated_frames:,} event frames? (yes/no): ").strip().lower()
             if user_response not in ['yes', 'y']:
-                print("Frame generation cancelled")
+                logger.info("Frame generation cancelled")
                 return
         
         # Generate frames using the generalized builder
-        print("\nStarting frame generation...")
+        logger.info("Starting frame generation...")
         if self.config['frame_generator'] == 'reconstruction':
             hot_pxls = self.hot_pixels_file # reconstruction loads the file, not the direct array
         else:
@@ -600,8 +816,8 @@ class EventDataset():
         )
         
         self.frames_dir = frames_dir
-        print(f"✓ Frame generation complete: {frames_dir}")
-    
+        logger.info(f"✓ Frame generation complete: {frames_dir}")
+
     def get_events(self, start_time=None, end_time=None, max_events=None,
                 start_idx=None, end_idx=None, chunk_size=1_000_000,
                 time_unit="ticks", fields=("x","y","t","p"),
@@ -778,7 +994,7 @@ class EventDataset():
                             pass
                     results[seq] = meta
                 except Exception as e:
-                    print(f"Warning: failed to read {meta_path}: {e}")
+                    logger.warning(f"failed to read {meta_path}: {e}")
 
         return results or None
     
@@ -792,6 +1008,7 @@ class EventDataset():
         info = {
             'dataset_name': self.dataset_name,
             'sequence_name': self.sequence_name,
+            'hdf5_path': self.dataset_formatted,
             'file_path': file_paths,
             'events_count': self.events_count,
             'sensor_resolution': (self.width, self.height),
@@ -805,3 +1022,377 @@ class EventDataset():
     def __repr__(self):
         return (f"Event_dataset(dataset='{self.dataset_name}', "f"sequence='{self.sequence_name}',"
                 f"Saved location: {self.dataset_sequences})")
+
+
+_FRAME_NPY_RE = re.compile(r"^frame_(\d+)\.npy$")
+
+
+def _list_frame_npy_files(directory: str | os.PathLike) -> list[Path]:
+    directory = Path(directory)
+
+    paths = []
+    for p in directory.iterdir():
+        m = _FRAME_NPY_RE.fullmatch(p.name)
+        if m:
+            paths.append((int(m.group(1)), p))
+
+    paths.sort(key=lambda t: t[0])
+    return [p for _, p in paths]
+
+
+def _resolve_h5_path(path: str | os.PathLike) -> Optional[Path]:
+    """
+    Accept either:
+      - /some/dir/frames.h5
+      - /some/dir
+    """
+    path = Path(path)
+
+    if path.is_file() and path.suffix.lower() in {".h5", ".hdf5"}:
+        return path
+
+    candidate = path / "frames.h5"
+    if candidate.exists():
+        return candidate
+
+    return None
+
+
+def _collapse_channels(batch: np.ndarray) -> np.ndarray:
+    """
+    Convert frame batches to [B, H, W] for sparse-event VPR.
+
+    Handles:
+      [B, H, W]       -> unchanged
+      [B, H, W, 2]    -> sum polarity channels
+      [B, 2, H, W]    -> sum polarity channels
+      [B, H, W, 1]    -> squeeze
+      [B, 1, H, W]    -> squeeze
+    """
+    if batch.ndim == 3:
+        return batch
+
+    if batch.ndim != 4:
+        raise ValueError(f"Expected frame batch with ndim 3 or 4, got shape {batch.shape}")
+
+    # HWC polarity / singleton
+    if batch.shape[-1] == 2:
+        return batch.sum(axis=-1)
+    if batch.shape[-1] == 1:
+        return batch[..., 0]
+
+    # CHW polarity / singleton
+    if batch.shape[1] == 2:
+        return batch.sum(axis=1)
+    if batch.shape[1] == 1:
+        return batch[:, 0]
+
+    raise ValueError(
+        f"Cannot collapse frame batch with shape {batch.shape}; "
+        "expected [B,H,W], [B,H,W,2], or [B,2,H,W]."
+    )
+
+
+def _as_float_batch(batch: np.ndarray, collapse_polarity: bool) -> np.ndarray:
+    batch = np.asarray(batch)
+
+    if collapse_polarity:
+        batch = _collapse_channels(batch)
+
+    return batch.astype(np.float32, copy=False)
+
+
+def _temporal_filter_indices_from_seconds(
+    times_sec: np.ndarray,
+    min_gap_sec: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Greedy temporal thinning.
+
+    Keeps the first frame, then only keeps frames at least min_gap_sec
+    after the last kept frame.
+    """
+    kept = []
+    dropped = []
+
+    last_kept_t = None
+
+    for idx, t in enumerate(times_sec):
+        if not np.isfinite(t):
+            # If timing is unknown/corrupt for this frame, keep it rather than
+            # silently deleting data.
+            kept.append(idx)
+            continue
+
+        if last_kept_t is None or (float(t) - float(last_kept_t)) >= min_gap_sec:
+            kept.append(idx)
+            last_kept_t = float(t)
+        else:
+            dropped.append(idx)
+
+    return (
+        np.asarray(kept, dtype=np.int64),
+        np.asarray(dropped, dtype=np.int64),
+    )
+
+
+def _h5_frame_times_seconds(h5_path: Path) -> Optional[np.ndarray]:
+    """
+    Returns one timestamp per frame in seconds, preferably midpoint time.
+
+    Requires:
+      /frame_start_ticks
+      /frame_end_ticks
+      attrs["ticks_per_second"]
+
+    If those are unavailable, returns None.
+    """
+    with h5py.File(h5_path, "r") as f:
+        if "frames" not in f:
+            raise KeyError(f"{h5_path} does not contain dataset '/frames'.")
+
+        if "frame_start_ticks" not in f or "frame_end_ticks" not in f:
+            return None
+
+        ticks_per_second = f.attrs.get("ticks_per_second", None)
+        if ticks_per_second is None:
+            return None
+
+        ticks_per_second = float(ticks_per_second)
+        if not np.isfinite(ticks_per_second) or ticks_per_second <= 0:
+            return None
+
+        start_ticks = f["frame_start_ticks"][:].astype(np.float64, copy=False)
+        end_ticks = f["frame_end_ticks"][:].astype(np.float64, copy=False)
+
+        valid_start = start_ticks >= 0
+        valid_end = end_ticks >= 0
+
+        ticks = np.empty_like(start_ticks, dtype=np.float64)
+
+        both = valid_start & valid_end
+        only_start = valid_start & ~valid_end
+        only_end = ~valid_start & valid_end
+        neither = ~valid_start & ~valid_end
+
+        ticks[both] = (start_ticks[both] + end_ticks[both]) / 2.0
+        ticks[only_start] = start_ticks[only_start]
+        ticks[only_end] = end_ticks[only_end]
+        ticks[neither] = np.nan
+
+        return ticks / ticks_per_second
+
+
+@dataclass
+class FrameBatchSource:
+    """
+    Unified frame source for either:
+      - frames.h5
+      - frame_XXXXXX.npy files
+
+    Exposes:
+      len(source)
+      source.iter_batches(...)
+      source.kept_idx
+      source.dropped_idx
+    """
+
+    backend: str
+    path: Path
+    collapse_polarity: bool
+    kept_idx: np.ndarray
+    dropped_idx: np.ndarray
+    npy_files: Optional[list[Path]] = None
+
+    def __len__(self) -> int:
+        return int(len(self.kept_idx))
+
+    @property
+    def n_frames(self) -> int:
+        return len(self)
+
+    def iter_batches(self, batch_size: int) -> Iterable[np.ndarray]:
+        batch_size = int(batch_size)
+        if batch_size <= 0:
+            raise ValueError(f"batch_size must be positive, got {batch_size}")
+
+        if self.backend == "h5":
+            yield from self._iter_h5_batches(batch_size)
+            return
+
+        if self.backend == "npy":
+            yield from self._iter_npy_batches(batch_size)
+            return
+
+        raise ValueError(f"Unknown frame source backend: {self.backend}")
+
+    def _iter_h5_batches(self, batch_size: int) -> Iterable[np.ndarray]:
+        if len(self.kept_idx) == 0:
+            return
+
+        with h5py.File(self.path, "r") as f:
+            frames = f["frames"]
+
+            for start in range(0, len(self.kept_idx), batch_size):
+                end = min(start + batch_size, len(self.kept_idx))
+                idx = self.kept_idx[start:end]
+
+                # h5py fancy indexing requires increasing indices.
+                # Our filters preserve order, so this is safe.
+                batch = frames[idx]
+
+                yield _as_float_batch(
+                    batch,
+                    collapse_polarity=self.collapse_polarity,
+                )
+
+    def _iter_npy_batches(self, batch_size: int) -> Iterable[np.ndarray]:
+        if self.npy_files is None:
+            raise RuntimeError("npy backend requires npy_files.")
+
+        batch = []
+
+        for path in self.npy_files:
+            arr = np.load(path)
+            batch.append(arr)
+
+            if len(batch) >= batch_size:
+                batch_arr = np.stack(batch, axis=0)
+                yield _as_float_batch(
+                    batch_arr,
+                    collapse_polarity=self.collapse_polarity,
+                )
+                batch.clear()
+
+        if batch:
+            batch_arr = np.stack(batch, axis=0)
+            yield _as_float_batch(
+                batch_arr,
+                collapse_polarity=self.collapse_polarity,
+            )
+
+
+def make_frame_source(
+    path: str | os.PathLike,
+    *,
+    collapse_polarity: bool = True,
+    min_gap_sec: Optional[float] = None,
+    legacy_time_filter_fn: Optional[Callable] = None,
+) -> FrameBatchSource:
+    """
+    Create a unified frame loader from either a new HDF5 frame store or old
+    frame_XXXXXX.npy directory.
+
+    Parameters
+    ----------
+    path:
+        Directory containing either frames.h5 or frame_XXXXXX.npy files.
+
+    collapse_polarity:
+        If True, converts polarity frames [H,W,2] to count frames [H,W].
+
+    min_gap_sec:
+        Optional temporal filtering gap.
+
+    legacy_time_filter_fn:
+        Optional callback for old npy directories. This lets existing Event-LAB
+        time-filter logic remain untouched.
+
+        Expected signature:
+            fn(files, directory, min_gap_sec, debug=False)
+
+        Expected return:
+            {
+                "files": ...,
+                "kept_idx": ...,
+                "dropped_idx": ...
+            }
+    """
+    path = Path(path)
+
+    h5_path = _resolve_h5_path(path)
+    if h5_path is not None:
+        with h5py.File(h5_path, "r") as f:
+            if "frames" not in f:
+                raise KeyError(f"{h5_path} does not contain dataset '/frames'.")
+            n_total = int(f["frames"].shape[0])
+
+        kept_idx = np.arange(n_total, dtype=np.int64)
+        dropped_idx = np.asarray([], dtype=np.int64)
+
+        if min_gap_sec is not None and float(min_gap_sec) > 0:
+            times_sec = _h5_frame_times_seconds(h5_path)
+
+            if times_sec is not None:
+                kept_idx, dropped_idx = _temporal_filter_indices_from_seconds(
+                    times_sec,
+                    float(min_gap_sec),
+                )
+
+        return FrameBatchSource(
+            backend="h5",
+            path=h5_path,
+            collapse_polarity=collapse_polarity,
+            kept_idx=kept_idx,
+            dropped_idx=dropped_idx,
+            npy_files=None,
+        )
+
+    # Legacy frame_XXXXXX.npy fallback
+    npy_files = _list_frame_npy_files(path)
+
+    if len(npy_files) == 0:
+        raise FileNotFoundError(
+            f"No frames found at {path}. Expected either {path / 'frames.h5'} "
+            "or files matching frame_XXXXXX.npy."
+        )
+
+    original_n = len(npy_files)
+
+    if (
+        min_gap_sec is not None
+        and float(min_gap_sec) > 0
+        and legacy_time_filter_fn is not None
+    ):
+        res = legacy_time_filter_fn(
+            npy_files,
+            str(path),
+            float(min_gap_sec),
+            debug=False,
+        )
+
+        npy_files = list(res["files"])
+        kept_idx = np.asarray(res.get("kept_idx", []), dtype=np.int64)
+        dropped_idx = np.asarray(res.get("dropped_idx", []), dtype=np.int64)
+    else:
+        kept_idx = np.arange(original_n, dtype=np.int64)
+        dropped_idx = np.asarray([], dtype=np.int64)
+
+    return FrameBatchSource(
+        backend="npy",
+        path=path,
+        collapse_polarity=collapse_polarity,
+        kept_idx=kept_idx,
+        dropped_idx=dropped_idx,
+        npy_files=npy_files,
+    )
+
+
+def iter_frame_batches(
+    path: str | os.PathLike,
+    *,
+    batch_size: int,
+    collapse_polarity: bool = True,
+    min_gap_sec: Optional[float] = None,
+    legacy_time_filter_fn: Optional[Callable] = None,
+) -> Iterable[np.ndarray]:
+    """
+    Convenience wrapper for callers that only need batches.
+    """
+    source = make_frame_source(
+        path,
+        collapse_polarity=collapse_polarity,
+        min_gap_sec=min_gap_sec,
+        legacy_time_filter_fn=legacy_time_filter_fn,
+    )
+    yield from source.iter_batches(batch_size)

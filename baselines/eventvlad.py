@@ -9,39 +9,55 @@ import openpyxl
 from datetime import datetime, timezone
 import re, gdown, time
 import utils.functional as FUNC
+import shutil 
+from datasets.dataloader import make_frame_source
+from loguru import logger
 
 class eventvlad_baseline(EventBaseline):
-    def __init__(self):
+    def __init__(self, config, dataset_config, reference, query):
         super().__init__()
 
+        # Set the experimental details as instance variables
+        self.config = config
+        self.dataset_config = dataset_config
+        self.reference = reference
+        self.query = query
+
+        # Set the baseline name
         self.name = "eventvlad"
+
         # Check if the baseline repository is already cloned
         self.repo_path = "./baselines/EventVLAD"
+
         # Baseline URL
         self.url = "https://github.com/alexjunholee/EventVLAD.git"
         if not os.path.exists(self.repo_path):
             clone_repo(self.url, destination=self.repo_path)
-            file_id = "1xdoGI7vmNelaR_D9-FUk5SbB3webqa5c"  # from your URL
+            file_id = "1xdoGI7vmNelaR_D9-FUk5SbB3webqa5c" # Denoiser weights
             out = "./baselines/EventVLAD/denoiser_brisbane"
+            gdown.download(id=file_id, output=out, quiet=False)
 
-            gdown.download(id=file_id, output=out, quiet=False)  # no need for the usercontent URL
-
+        # Set the path to the baseline configuration file
         self.baseline_config_path = './baselines/eventvlad.yaml'
-        self.matrix_type = 'distance' # options are 'similarity' or 'distance'
+        
+        # Set the type of matrix generated for evaluation (distance or similarity)
+        self.matrix_type = 'distance'
 
         # Load the baseline configuration
         with open(self.baseline_config_path, 'r') as file:
             self.baseline_config = yaml.safe_load(file)
+
         # Check if the pytorch-NetVlad path exists
         if not os.path.exists(self.baseline_config['netvlad_path']):
             netvlad_url = "https://github.com/Nanne/pytorch-NetVlad.git"
             clone_repo(netvlad_url, destination=self.baseline_config['netvlad_path'])
-        if not os.path.exists(os.path.join(self.baseline_config['netvlad_path'], 'vgg16_eventvlad.tar')):
-            print("Downloading the eventvlad weights...")
+        # Download the NetVLAD weights if not already present    
+        if not os.path.exists('./baselines/EventVLAD/vgg16_eventvlad.tar'):
+            logger.info("Downloading the eventvlad weights...")
             # Get the eventvlad weights
             file_id = "1rSIhH1pk8ADxfqYQXoos_hTuWyfiWSu3"
             out = './baselines/EventVLAD/vgg16_eventvlad.tar'
-            gdown.download(id=file_id, output=out, quiet=False)  # no need for the usercontent URL
+            gdown.download(id=file_id, output=out, quiet=False)
 
         # Create the data output folder
         self.outdir = './output/eventvlad'
@@ -49,74 +65,98 @@ class eventvlad_baseline(EventBaseline):
 
     def format_data(self, config, dataset_config, reference, query, timewindow):
         """
-        Format the reference and query data for the baseline.
+        Format the reference and query data for the EventVLAD baseline.
+
+        Frame loading is now storage-agnostic through:
+
+            from datasets.dataloader import make_frame_source
+
+        This supports the new frames.h5 storage system without manually listing
+        frame_*.npy files.
         """
-        self.config=config
+
+        self.config = config
+        self.dataset_config = dataset_config
+        self.reference = reference
+        self.query = query
+
         # Get experimental details
         ref_info = reference.get_dataset_info()
         query_info = query.get_dataset_info()
 
-        ref_name = ref_info['sequence_name']
-        query_name = query_info['sequence_name']
+        ref_name = ref_info["sequence_name"]
+        query_name = query_info["sequence_name"]
 
-        # from ref_info['file_path'] dict, find the directory that matches ref/query name and timewindow
-        self.ref_key = [d for d in ref_info['file_path'] if ref_name in d and str(timewindow) in d]
-        self.query_key = [d for d in query_info['file_path'] if query_name in d and str(timewindow) in d]
-        self.ref_directory = ref_info['file_path'][self.ref_key[0]]
-        self.query_directory = query_info['file_path'][self.query_key[0]]
+        # Find the frame-store directories matching sequence name + timewindow
+        self.ref_key = [
+            d for d in ref_info["file_path"]
+            if ref_name in d and str(timewindow) in d
+        ]
+        self.query_key = [
+            d for d in query_info["file_path"]
+            if query_name in d and str(timewindow) in d
+        ]
+
+        if not self.ref_key:
+            raise FileNotFoundError(
+                f"No reference frame store found for sequence={ref_name}, timewindow={timewindow}"
+            )
+
+        if not self.query_key:
+            raise FileNotFoundError(
+                f"No query frame store found for sequence={query_name}, timewindow={timewindow}"
+            )
+
         self.ref_name = self.ref_key[0]
         self.query_name = self.query_key[0]
 
-        from pathlib import Path
-        import re
+        self.ref_directory = ref_info["file_path"][self.ref_name]
+        self.query_directory = query_info["file_path"][self.query_name]
 
-        _RX_FRAME = re.compile(r"^frame_(\d+)\.npy$")
-
-        def list_frame_files(dirpath: str):
-            paths = []
-            for p in Path(dirpath).iterdir():
-                m = _RX_FRAME.fullmatch(p.name)
-                if m:
-                    paths.append((int(m.group(1)), p))
-            paths.sort(key=lambda t: t[0])  # numeric sort
-            return [p for _, p in paths]
-
-        # usage
-        ref_files   = list_frame_files(self.ref_directory)
-        query_files = list_frame_files(self.query_directory)
-        # after you have ref_files, query_files and min_gap_sec
+        # Build frame sources using the new generalized loader.
+        # This replaces all manual frame_*.npy listing/loading logic.
         min_gap_sec = float(config.get("filter_places_sec", 60))
 
-        ref_res   = FUNC._apply_time_filter_to_files(ref_files,   self.ref_directory,  min_gap_sec, debug=False)
-        query_res = FUNC._apply_time_filter_to_files(query_files, self.query_directory, min_gap_sec, debug=False)
+        self.ref_frame_source = make_frame_source(
+            self.ref_directory,
+            min_gap_sec=min_gap_sec,
+        )
 
-        # Replace file lists with filtered ones
-        ref_files   = ref_res['files']
-        query_files = query_res['files']
+        self.query_frame_source = make_frame_source(
+            self.query_directory,
+            min_gap_sec=min_gap_sec,
+        )
 
-        # proceed to load arrays
-        self.reference_data = np.array([np.load(p) for p in ref_files])
-        self.query_data     = np.array([np.load(p) for p in query_files])
+        # Preserve kept/dropped indices if the loader exposes them.
+        self.ref_kept_idx = getattr(self.ref_frame_source, "kept_idx", None)
+        self.ref_dropped_idx = getattr(self.ref_frame_source, "dropped_idx", None)
 
-        # OPTIONAL: Create temporary directory to store converted data, if not using numpy arrays
-        self.temp_dir = tempfile.mkdtemp(prefix="baseline_data_")
-        self.ref_dir = os.path.join(self.temp_dir, ref_name)
-        self.query_dir = os.path.join(self.temp_dir, query_name)
-        self.ref_dir_out = os.path.join(self.temp_dir, f"{ref_name}_denoised")
-        self.query_dir_out = os.path.join(self.temp_dir, f"{query_name}_denoised")
-        os.makedirs(self.ref_dir, exist_ok=True)
-        os.makedirs(self.query_dir, exist_ok=True)
-        os.makedirs(self.ref_dir_out, exist_ok=True)
-        os.makedirs(self.query_dir_out, exist_ok=True)
+        self.query_kept_idx = getattr(self.query_frame_source, "kept_idx", None)
+        self.query_dropped_idx = getattr(self.query_frame_source, "dropped_idx", None)
 
-        # store the reference and query data to the temporary directory
-        for i, arr in enumerate(self.reference_data):
-            np.save(os.path.join(self.ref_dir, f"frame_{i:06d}.npy"), arr)
-        for i, arr in enumerate(self.query_data):
-            np.save(os.path.join(self.query_dir, f"frame_{i:06d}.npy"), arr)
+        # Denoised output directories used by build_execute/run.
+        self.ref_dir_out = os.path.join(
+            config["data_path"],
+            dataset_config["dataset"]["name"],
+            ref_name,
+            f"{ref_name}-frames-{timewindow}-denoised",
+        )
 
-        self.output_dir = os.path.join(self.outdir, f"{ref_info['dataset_name']}", f"{ref_info['sequence_name']}_{query_info['sequence_name']}",
-                                       f"{config['frame_generator']}_{timewindow}")
+        self.query_dir_out = os.path.join(
+            config["data_path"],
+            dataset_config["dataset"]["name"],
+            query_name,
+            f"{query_name}-frames-{timewindow}-denoised",
+        )
+
+        # Main baseline output directory
+        self.output_dir = os.path.join(
+            self.outdir,
+            f"{ref_info['dataset_name']}",
+            f"{ref_info['sequence_name']}_{query_info['sequence_name']}",
+            f"{config['frame_generator']}_{timewindow}",
+        )
+
         os.makedirs(self.output_dir, exist_ok=True)
 
 
@@ -126,39 +166,43 @@ class eventvlad_baseline(EventBaseline):
         """
         # Denoise the images and output them to the temporary directory
         # Build the command as a single string
-        ref_convert = (
-            # Include command line arugments specific to the baseline
-            f'python utils/eventvlad_denoiser.py '
-            f'--input_dir {self.ref_dir} '
-            f'--model_path baselines/EventVLAD/denoiser_brisbane '
-            f'--save_dir {self.ref_dir_out} '
-            f'--use_gpu '
-            f'--show {0}'
-        )
-        query_convert = (
-            # Include command line arugments specific to the baseline
-            f"python utils/eventvlad_denoiser.py "
-            f"--input_dir {self.query_dir} "
-            f"--model_path baselines/EventVLAD/denoiser_brisbane "
-            f"--save_dir {self.query_dir_out} "
-            f"--use_gpu "
-            f"--show {0}"
-        )
-        # Convert all data to denoised images
-        self.ref_convert_cmd_str = ["pixi", "run", "bash", "-c", ref_convert]
-        result = subprocess.run(self.ref_convert_cmd_str, check=True)
-        print("STDOUT:", result.stdout)
-        if result.stderr:
-            print("STDERR:", result.stderr)
-        if result.returncode != 0:
-            raise RuntimeError(f"Baseline evaluation failed with return code {result.returncode}")
-        self.query_convert_cmd_str = ["pixi", "run", "bash", "-c", query_convert]
-        result = subprocess.run(self.query_convert_cmd_str, check=True)
-        print("STDOUT:", result.stdout)
-        if result.stderr:
-            print("STDERR:", result.stderr)
-        if result.returncode != 0:
-            raise RuntimeError(f"Baseline evaluation failed with return code {result.returncode}")
+        if not os.path.exists(self.ref_dir_out):
+            os.makedirs(self.ref_dir_out, exist_ok=True)
+            ref_convert = (
+                # Include command line arugments specific to the baseline
+                f'python utils/eventvlad_denoiser.py '
+                f'--input_dir {self.ref_directory} '
+                f'--model_path baselines/EventVLAD/denoiser_brisbane '
+                f'--save_dir {self.ref_dir_out} '
+                f'--use_gpu '
+                f'--show {0}'
+            )
+            # Convert all data to denoised images
+            self.ref_convert_cmd_str = ["pixi", "run", "bash", "-c", ref_convert]
+            result = subprocess.run(self.ref_convert_cmd_str, check=True)
+            logger.info("STDOUT:", result.stdout)
+            if result.stderr:
+                logger.error("STDERR:", result.stderr)
+            if result.returncode != 0:
+                raise RuntimeError(f"Baseline evaluation failed with return code {result.returncode}")
+        if not os.path.exists(self.query_dir_out):
+            os.makedirs(self.query_dir_out, exist_ok=True)
+            query_convert = (
+                # Include command line arugments specific to the baseline
+                f"python utils/eventvlad_denoiser.py "
+                f"--input_dir {self.query_directory} "
+                f"--model_path baselines/EventVLAD/denoiser_brisbane "
+                f"--save_dir {self.query_dir_out} "
+                f"--use_gpu "
+                f"--show {0}"
+            )
+            self.query_convert_cmd_str = ["pixi", "run", "bash", "-c", query_convert]
+            result = subprocess.run(self.query_convert_cmd_str, check=True)
+            logger.info("STDOUT:", result.stdout)
+            if result.stderr:
+                logger.error("STDERR:", result.stderr)
+            if result.returncode != 0:
+                raise RuntimeError(f"Baseline evaluation failed with return code {result.returncode}")
 
     def run(self):
         """
@@ -189,7 +233,7 @@ class eventvlad_baseline(EventBaseline):
         all_arrays = [np.load(f) for f in all_files]
         GThard = np.load(GT)
         if not all_arrays:
-            print("No .npy result files found in", self.output_dir)
+            logger.warning("No .npy result files found in", self.output_dir)
             return
     
         timestamp = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
