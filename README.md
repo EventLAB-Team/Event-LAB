@@ -5,7 +5,7 @@
 </p>
 
 ![Read the Docs](https://img.shields.io/badge/Read%20the%20Docs-%23000000?style=for-the-badge&logo=readthedocs&logoColor=white)
-[![Documentation Status](https://readthedocs.org/projects/eventlab/badge/?version=latest&style=flat)](https://event-lab.readthedocs.io/en/latest/)
+[![Documentation Status](https://readthedocs.org/projects/event-lab/badge/?version=latest&style=flat)](https://event-lab.readthedocs.io/en/latest/?badge=latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
 [![QUT Centre for Robotics](https://img.shields.io/badge/collection-QUT%20Robotics-%23043d71?style=flat-square)](https://qcr.ai)
