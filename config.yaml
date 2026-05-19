@@ -16,13 +16,13 @@ keep_original: true # Keep the original downloaded files prior to .hdf5 conversi
 request_input: false # Request input from the user for dataset download
 gps_tolerance: 10 # Tolerance to build the pseudo ground truth (in no. places)
 gps_tolerance_sec: 0.0
-ground_truth_tolerance: 70 # Distance in metres to build the ground truth tolerance
+ground_truth_tolerance: 3 # Distance in metres to build the ground truth tolerance
 filter_places_sec: 0.0 # Filter places to be at least this far apart in time (in seconds)
 
 # Frame reconstruction parameters
-timewindows: [1000] # Int value in msec
+timewindows: [250, 500, 750, 1000] # Int value in msec
 num_events: [100000] # Max events per frame, only used if frame_generator is "event_count"
-frame_generator: "frames" # Options: "frames" "reconstruction"
+frame_generator: "reconstruction" # Options: "frames" "reconstruction"
 frame_accumulator: "polarity"    # Options: "eventcount", "polarity"
 reconstruction_model: "e2vid"  # Options: "firenet", "e2vid (default)"
 
@@ -33,10 +33,6 @@ VPR-Baselines:
   - "ensemble"
   - "eventvlad"
   - "vprmethods"
-
-SLAM-Baselines:
-  - "plevio"
-  - "uslam"
 
 # Dataset configuration file to download and pre-process datasets for Event-Lab
 datasets:

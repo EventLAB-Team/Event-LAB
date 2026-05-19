@@ -7,6 +7,7 @@ from baselines.VPR_Tutorial.evaluation.metrics import recallAtK, createPR
 from datasets.groundtruths import create_GTtol_by_distance
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
+from loguru import logger
 
 def overlay_matches_on_array(
     array,
@@ -170,7 +171,7 @@ class EventBaseline:
                 idx = np.argsort(R)
                 aupr = float(np.trapz(P[idx], R[idx]))
             except Exception as e:
-                print(f"  -> Error computing PR for {name}: {e}")
+                logger.error(f"  -> Error computing PR for {name}: {e}")
                 P, R, aupr = np.array([]), np.array([]), np.nan
 
             if table is not None:
@@ -189,9 +190,9 @@ class EventBaseline:
             })
             pr_curves[(ref_query, name)] = (P, R)
 
-        if table is not None:
-            print(table)
-        
+            if table is not None:
+                logger.info("\n{}", table.get_string())
+
         return rows, pr_curves
     
     def save_results(self, rows, pr_curves, run_name, ref_query):
@@ -448,4 +449,4 @@ class EventBaseline:
                 update_agg_cell(ws_sum, r_idx, hdr_sum, m, row.get(m))
 
         wb.save(excel_path)
-        print(f"Saved Excel workbook to: {excel_path}")
+        logger.info(f"Saved Excel workbook to: {excel_path}")

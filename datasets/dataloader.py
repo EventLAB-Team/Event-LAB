@@ -6,6 +6,7 @@ from typing import Callable, Iterable, Optional
 
 from tqdm import tqdm
 from urllib.parse import unquote
+from loguru import logger
 
 import numpy as np
 from datasets.format_data import format_sequence_data, build_event_frames
@@ -68,12 +69,12 @@ class EventDataset():
             if self.data_config['sequences'][self.sequence_name]['hot_pixel']['available']:
                 # Download the hot pixel file if available
                 hot_pixel_url = self.data_config['sequences'][self.sequence_name]['hot_pixel']['url']
-                print(f"Downloading hot pixel file from {hot_pixel_url}")
+                logger.info(f"Downloading hot pixel file from {hot_pixel_url}")
                 response = requests.get(hot_pixel_url)
                 response.raise_for_status()
                 with open(self.hot_pixel_file, 'wb') as f:
                     f.write(response.content)
-                print(f"✓ Hot pixel file downloaded: {self.hot_pixel_file}")
+                logger.info(f"✓ Hot pixel file downloaded: {self.hot_pixel_file}")
         
         # Download the sequence data if raw data does not exist
         if not os.path.exists(self.dataset_raw):
@@ -119,7 +120,7 @@ class EventDataset():
             and self.data_config['sequences'][self.sequence_name]['ground_truth']['available']
         ):
             gt_url = self.data_config['sequences'][self.sequence_name]['ground_truth']['url']
-            print(f"Downloading ground truth from {gt_url}")
+            logger.info(f"Downloading ground truth from {gt_url}")
 
             request_input = getattr(self, "request_input", False)
             max_retries = 5
@@ -128,8 +129,26 @@ class EventDataset():
                 session.headers.update(self._download_headers())
 
                 # Resolve Zenodo pretty URL -> actual file URL + metadata
-                resolved_url, resolved_size, resolved_checksum = self._resolve_zenodo_file(gt_url, session)
-                size = resolved_size if resolved_size is not None else check_download_size(resolved_url)
+                # check if the gt_url contains "zenodo"
+                if "zenodo" in gt_url:
+                    resolved_url, resolved_size, resolved_checksum = self._resolve_zenodo_file(gt_url, session)
+                    size = resolved_size
+                else:
+                    resolved_url = gt_url
+                    try:
+                        response = requests.head(resolved_url, allow_redirects=True, timeout=30)
+                        response.raise_for_status()
+                        
+                        # Get the Content-Length header
+                        size_header = response.headers.get('Content-Length')
+                        if size_header:
+                            size = int(size_header)
+                        else:
+                            logger.warning("Server did not provide file size")
+                        
+                    except requests.RequestException as e:
+                        logger.error(f"Error checking file size: {e}")
+                    resolved_checksum = None
 
                 if request_input and size is not None:
                     gb = size / (1024 * 1024 * 1024)
@@ -146,10 +165,10 @@ class EventDataset():
                         if os.path.exists(gt_file):
                             resume_pos = os.path.getsize(gt_file)
                             if size is not None and resume_pos == size:
-                                print(f"Ground truth already completely downloaded: {gt_file}")
+                                logger.info(f"Ground truth already completely downloaded: {gt_file}")
                                 break
                             elif resume_pos > 0:
-                                print(
+                                logger.info(
                                     f"Resuming ground truth download from "
                                     f"{resume_pos / (1024 * 1024):.1f}MB"
                                 )
@@ -169,7 +188,7 @@ class EventDataset():
 
                         # If server ignored Range and returned full file, restart cleanly.
                         if resume_pos > 0 and http_response.status_code != 206:
-                            print("Server did not honour Range request; restarting full download.")
+                            logger.debug("Server did not honour Range request; restarting full download.")
                             resume_pos = 0
 
                         mode = "ab" if resume_pos > 0 else "wb"
@@ -206,7 +225,7 @@ class EventDataset():
                                     f"expected {expected_md5}, got {actual_md5}"
                                 )
 
-                        print(f"✓ Ground truth downloaded: {gt_file}")
+                        logger.info(f"✓ Ground truth downloaded: {gt_file}")
                         break
 
                     except (
@@ -215,43 +234,26 @@ class EventDataset():
                         requests.exceptions.ConnectionError,
                         IOError,
                     ) as e:
-                        print(f"Ground truth download failed on attempt {attempt + 1}: {e}")
+                        logger.error(f"Ground truth download failed on attempt {attempt + 1}: {e}")
 
                         if attempt < max_retries - 1:
                             wait_time = 2 ** attempt
-                            print(f"Retrying in {wait_time} seconds...")
+                            logger.info(f"Retrying in {wait_time} seconds...")
                             time.sleep(wait_time)
                         else:
-                            print(f"Download failed after {max_retries} attempts")
+                            logger.error(f"Download failed after {max_retries} attempts")
                             if os.path.exists(gt_file):
                                 current_size = os.path.getsize(gt_file)
-                                print(f"Partial file size: {current_size / (1024 * 1024):.1f}MB")
-                                print("You can retry the download to resume from this point")
+                                logger.info(f"Partial file size: {current_size / (1024 * 1024):.1f}MB")
+                                logger.info("You can retry the download to resume from this point")
                             raise
 
                     except KeyboardInterrupt:
-                        print("\nGround truth download interrupted by user.")
+                        logger.info("\nGround truth download interrupted by user.")
                         if os.path.exists(gt_file):
                             current_size = os.path.getsize(gt_file)
-                            print(f"Partial file saved: {current_size / (1024 * 1024):.1f}MB")
+                            logger.info(f"Partial file saved: {current_size / (1024 * 1024):.1f}MB")
                         raise
-
-        def check_download_size(sequence_url):
-            try:
-                response = requests.head(sequence_url, allow_redirects=True, timeout=30)
-                response.raise_for_status()
-                
-                # Get the Content-Length header
-                size_header = response.headers.get('Content-Length')
-                if size_header:
-                    return int(size_header)
-                else:
-                    print("Warning: Server did not provide file size")
-                    return None
-                
-            except requests.RequestException as e:
-                print(f"Error checking file size: {e}")
-                return None
 
     def _download_headers(self):
         headers = {
@@ -491,7 +493,7 @@ class EventDataset():
                 tds = ev[tkey]
                 self.events_count = int(tds.shape[0])
                 if self.events_count == 0:
-                    print("Warning: No events found in dataset")
+                    logger.warning("No events found in dataset")
                     self.start_time = self.end_time = 0
                     self.duration_sec = 0.0
                     return
@@ -507,7 +509,7 @@ class EventDataset():
                 dset = ev
                 self.events_count = int(dset.shape[0])
                 if self.events_count == 0:
-                    print("Warning: No events found in dataset")
+                    logger.warning("No events found in dataset")
                     self.start_time = self.end_time = 0
                     self.duration_sec = 0.0
                     return
@@ -584,7 +586,7 @@ class EventDataset():
         scale = getattr(self, "time_scale", None)
         if not scale:
             # Fallback: assume nanoseconds if unknown (legacy), but warn
-            print("Warning: time_scale unknown; assuming 'ns'")
+            logger.warning("Warning: time_scale unknown; assuming 'ns'")
             scale = 1e9
         if unit == "s":   return int(round(value * scale))
         if unit == "ms":  return int(round(value * scale / 1e3))
@@ -625,7 +627,7 @@ class EventDataset():
             return width, height
         
         # Default fallback
-        print("Warning: Could not determine camera dimensions, using default 640x480")
+        logger.warning("Could not determine camera dimensions, using default 640x480")
         return 640, 480
     
     def _load_hot_pixels(self):
@@ -651,7 +653,7 @@ class EventDataset():
                         # Parse "x, y" format
                         parts = line.split(',')
                         if len(parts) != 2:
-                            print(f"Warning: Invalid format in hot pixels file line {line_num}: '{line}'")
+                            logger.warning(f"Invalid format in hot pixels file line {line_num}: '{line}'")
                             continue
                         
                         x = int(parts[0].strip())
@@ -661,10 +663,10 @@ class EventDataset():
                         if 0 <= x < self.width and 0 <= y < self.height:
                             hot_pixels.append((x, y))
                         else:
-                            print(f"Warning: Hot pixel ({x}, {y}) is out of sensor bounds ({self.width}x{self.height})")
-                            
+                            logger.warning(f"Hot pixel ({x}, {y}) is out of sensor bounds ({self.width}x{self.height})")
+
                     except ValueError as e:
-                        print(f"Warning: Could not parse line {line_num} in hot pixels file: '{line}' - {e}")
+                        logger.warning(f"Could not parse line {line_num} in hot pixels file: '{line}' - {e}")
                         continue
             
             if hot_pixels:
@@ -672,11 +674,11 @@ class EventDataset():
                 # Convert to numpy array for efficient filtering
                 return hot_pixels_array
             else:
-                print(f"No valid hot pixels found in {self.hot_pixels_file}")
+                logger.warning(f"No valid hot pixels found in {self.hot_pixels_file}")
                 return None
                 
         except Exception as e:
-            print(f"Error loading hot pixels file {self.hot_pixels_file}: {e}")
+            logger.error(f"Error loading hot pixels file {self.hot_pixels_file}: {e}")
             return None
     
     def _handle_event_frames(self, frames_dir, timewindow, window_type, recon=None, max_events=None):
@@ -734,19 +736,19 @@ class EventDataset():
             # sanity check: warn if absurd compared to duration we already computed
             try:
                 if hasattr(self, "duration_sec") and self.duration_sec > 0 and offset_sec > 10 * self.duration_sec:
-                    print(f"Warning: offset {offset_sec} s >> duration {self.duration_sec:.2f} s")
+                    logger.warning(f"offset {offset_sec} s >> duration {self.duration_sec:.2f} s")
             except Exception:
                 pass
-            print(f"Found offset for {self.sequence_name}: {offset_sec} seconds")
+            logger.info(f"Found offset for {self.sequence_name}: {offset_sec} seconds")
             return offset_sec
         except Exception as e:
-            print(f"Could not parse offset for {self.sequence_name}: {e}")
+            logger.error(f"Could not parse offset for {self.sequence_name}: {e}")
             return None
 
     def _estimate_and_confirm_frame_generation(self, frames_dir, timewindow_ms, offset_sec, window_type):
         # convert window to TICKS
         if not hasattr(self, "time_scale"):
-            print("Warning: time_scale unknown; assuming 'ns' for estimation")
+            logger.warning("time_scale unknown; assuming 'ns' for estimation")
             scale = 1e9
         else:
             scale = self.time_scale
@@ -760,7 +762,7 @@ class EventDataset():
 
         effective_duration_ticks = max(0, self.end_time - effective_start)
         if effective_duration_ticks <= 0:
-            print(f"Warning: No events after offset {offset_sec}, skipping frame generation")
+            logger.warning(f"No events after offset {offset_sec}, skipping frame generation")
             return
 
         estimated_frames = int(effective_duration_ticks // timewindow_ticks)
@@ -775,25 +777,25 @@ class EventDataset():
         
         # Estimate storage size
         estimated_size_mb = estimated_frames * self.width * self.height * bytes_per_pixel / (1024 * 1024)
-        
-        print(f"\n=== Event Frame Generation Estimation ===")
-        print(f"Time window: {timewindow_ms} ms")
-        print(f"Frame accumulator: {accumulator_type}")
-        print(f"Sequence offset: {offset_sec if offset_sec else 'None'}")
-        print(f"Effective duration: {effective_duration_sec:.2f} seconds")
-        print(f"Estimated frames: {estimated_frames:,}")
-        print(f"Frame resolution: {self.width} x {self.height}")
-        print(f"Estimated storage: {estimated_size_mb:.1f} MB")
-        
+
+        logger.info(f"\n=== Event Frame Generation Estimation ===")
+        logger.info(f"Time window: {timewindow_ms} ms")
+        logger.info(f"Frame accumulator: {accumulator_type}")
+        logger.info(f"Sequence offset: {offset_sec if offset_sec else 'None'}")
+        logger.info(f"Effective duration: {effective_duration_sec:.2f} seconds")
+        logger.info(f"Estimated frames: {estimated_frames:,}")
+        logger.info(f"Frame resolution: {self.width} x {self.height}")
+        logger.info(f"Estimated storage: {estimated_size_mb:.1f} MB")
+
         # Ask user for confirmation
         if self.config['request_input']:
             user_response = input(f"\nGenerate {estimated_frames:,} event frames? (yes/no): ").strip().lower()
             if user_response not in ['yes', 'y']:
-                print("Frame generation cancelled")
+                logger.info("Frame generation cancelled")
                 return
         
         # Generate frames using the generalized builder
-        print("\nStarting frame generation...")
+        logger.info("Starting frame generation...")
         if self.config['frame_generator'] == 'reconstruction':
             hot_pxls = self.hot_pixels_file # reconstruction loads the file, not the direct array
         else:
@@ -814,8 +816,8 @@ class EventDataset():
         )
         
         self.frames_dir = frames_dir
-        print(f"✓ Frame generation complete: {frames_dir}")
-    
+        logger.info(f"✓ Frame generation complete: {frames_dir}")
+
     def get_events(self, start_time=None, end_time=None, max_events=None,
                 start_idx=None, end_idx=None, chunk_size=1_000_000,
                 time_unit="ticks", fields=("x","y","t","p"),
@@ -992,7 +994,7 @@ class EventDataset():
                             pass
                     results[seq] = meta
                 except Exception as e:
-                    print(f"Warning: failed to read {meta_path}: {e}")
+                    logger.warning(f"failed to read {meta_path}: {e}")
 
         return results or None
     

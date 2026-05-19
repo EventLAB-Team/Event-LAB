@@ -12,60 +12,60 @@ dataset:
 sequences:
   q_high1:
     data:
-      url: ""
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/dvs/h5/c_h_qry.hdf5"
     ground_truth:
       available: true
-      url: ""
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/odom/c_h_qry.parquet"
     hot_pixel:
       available: false
       url: ""
   
   r_high1:
     data:
-      url: ""
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/dvs/h5/c_h_ref.hdf5"
     ground_truth:
       available: true
-      url: ""
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/odom/c_h_ref.parquet"
     hot_pixel:
       available: false
       url: ""
   
   q_med1:
     data:
-      url: ""
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/dvs/h5/c_h_qry.hdf5"
     ground_truth:
       available: true
-      url: ""
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/odom/c_h_qry.parquet"
     hot_pixel:
       available: false
       url: ""
   
   r_med1:
     data:
-      url: ""
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/dvs/h5/c_h_ref.hdf5"
     ground_truth:
       available: true
-      url: ""
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/odom/c_h_ref.parquet"
     hot_pixel:
       available: false
       url: ""
 
   q_low1:
     data:
-      url: ""
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/dvs/h5/c_h_qry.hdf5"
     ground_truth:
       available: true
-      url: ""
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/odom/c_h_qry.parquet"
     hot_pixel:
       available: false
       url: ""
   
   r_low1:
     data:
-      url: ""
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/dvs/h5/c_h_ref.hdf5"
     ground_truth:
       available: true
-      url: ""
+      url: "https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets/resolve/main/main_experiments/Fast_Slow/1/odom/c_h_ref.parquet"
     hot_pixel:
       available: false
       url: ""

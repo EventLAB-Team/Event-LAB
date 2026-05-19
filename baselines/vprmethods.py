@@ -99,15 +99,18 @@ class vprmethods_baseline(EventBaseline):
         """
         Build a commandline execute for the baseline with the provided reference, query, and ground truth data.
         """
+        ref_dir = Path(self.ref_dir).resolve()
+        query_dir = Path(self.query_dir).resolve()
+
         if config['frame_generator'] == 'reconstruction':
             eval_cmd = (
-                f'python main.py '
+                f'python -u main.py '
                 f'--method {self.baseline_config["method"]} '
                 f'--backbone {self.baseline_config["backbone"]} '
                 f'--descriptors_dimension {self.baseline_config["descriptors_dimension"]} '
                 f'--no_labels '
-                f'--database_folder {self.ref_dir} '
-                f'--queries_folder {self.query_dir} '
+                f'--database_folder {ref_dir} '
+                f'--queries_folder {query_dir} '
                 f'--save_descriptors'
             )
         self.full_cmd = ["pixi", "run", "bash", "-c", eval_cmd]

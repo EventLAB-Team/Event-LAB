@@ -40,7 +40,6 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from scipy import interpolate
-from datasets.get_data import get_dataset
 
 
 # =============================================================================
@@ -501,25 +500,94 @@ def qcr_event_ground_truth(config, dataset_config, reference_name, query_name,
                            gt_tolerance=2):
     """
     Build pseudo GT via % of route completed using dataset_config['other']['gt_times'] knots.
+    Uses generated frame-store metadata only; it does not create or load frame arrays.
     Rescales frame timelines to span GT durations (decouples frame count vs physical time).
     """
     def _timewindow_str(v):
         return str(v).replace(".", "_") if isinstance(v, float) else str(v)
 
-    def _count_npy(folder):
-        return len([f for f in os.listdir(folder) if f.endswith(".npy")]) if os.path.isdir(folder) else 0
+    def _count_legacy_frames(folder):
+        if not os.path.isdir(folder):
+            return 0
+        return len([
+            f for f in os.listdir(folder)
+            if f.startswith("frame_") and f.endswith(".npy")
+        ])
 
-    def _load_eff_ms(frames_dir, fallback_ms=None):
+    def _load_metadata(frames_dir):
         meta_path = os.path.join(frames_dir, "metadata.json")
         if os.path.isfile(meta_path):
             with open(meta_path, "r") as f:
-                m = json.load(f)
-            eff = m.get("derived_timewindow_ms", m.get("timewindow_ms"))
-            if eff is not None:
-                return float(eff)
-        if fallback_ms is None:
-            raise ValueError(f"No metadata.json with (derived_)timewindow_ms in {frames_dir}")
-        return float(fallback_ms)
+                return json.load(f)
+        return {}
+
+    def _resolve_h5_path(frames_dir, metadata):
+        storage_file = metadata.get("storage_file", "frames.h5")
+        candidates = [
+            os.path.join(frames_dir, storage_file),
+            os.path.join(frames_dir, "frames.h5"),
+        ]
+        for path in candidates:
+            if os.path.isfile(path):
+                return path
+        return None
+
+    def _frame_store_info(frames_dir, fallback_ms=None):
+        metadata = _load_metadata(frames_dir)
+        n_frames = metadata.get("total_frames")
+        eff_ms = metadata.get("derived_timewindow_ms", metadata.get("timewindow_ms"))
+
+        h5_path = _resolve_h5_path(frames_dir, metadata)
+        if h5_path is not None:
+            try:
+                import h5py
+
+                with h5py.File(h5_path, "r") as h5:
+                    if "frames" not in h5:
+                        raise KeyError(f"{h5_path} does not contain dataset '/frames'.")
+
+                    n_frames = int(h5["frames"].shape[0])
+
+                    ticks_per_second = h5.attrs.get("ticks_per_second", None)
+                    window_ticks = h5.attrs.get("window_ticks", None)
+                    if ticks_per_second is not None and window_ticks is not None:
+                        ticks_per_second = float(ticks_per_second)
+                        window_ticks = float(window_ticks)
+                        if np.isfinite(ticks_per_second) and ticks_per_second > 0:
+                            eff_ms = (window_ticks / ticks_per_second) * 1000.0
+            except ImportError:
+                # metadata.json is enough for GT sizing, and keeps this path usable
+                # in lightweight environments that do not have h5py imported.
+                pass
+
+        if n_frames is None:
+            n_frames = _count_legacy_frames(frames_dir)
+
+        n_frames = int(n_frames or 0)
+        if n_frames <= 0:
+            raise ValueError(
+                f"Missing frame store in {frames_dir}. Expected metadata.json, "
+                "frames.h5, or legacy frame_*.npy files."
+            )
+
+        if eff_ms is None:
+            if fallback_ms is None:
+                raise ValueError(f"No (derived_)timewindow_ms metadata in {frames_dir}")
+            eff_ms = fallback_ms
+
+        return n_frames, float(eff_ms)
+
+    def _validate_knots(name, knots):
+        if len(knots) < 2:
+            raise ValueError(f"Need at least two GT time knots for {name}.")
+        knots = np.asarray(knots, dtype=float)
+        if not np.all(np.isfinite(knots)):
+            raise ValueError(f"GT time knots for {name} contain non-finite values.")
+        if np.any(np.diff(knots) < 0):
+            raise ValueError(f"GT time knots for {name} must be monotonic.")
+        if knots[-1] <= 0:
+            raise ValueError(f"Last GT time knot for {name} must be positive.")
+        return knots
 
     def _frame_times_rescaled(n_frames, eff_ms, gt_last_s):
         if n_frames <= 0:
@@ -531,33 +599,20 @@ def qcr_event_ground_truth(config, dataset_config, reference_name, query_name,
         t = t_naive * scale
         return np.clip(t, 0.0, float(gt_last_s))
 
-    dataset_name = "qcr_event"
-    qcr_config = config.copy()
-    qcr_config['timewindows'] = [1000]
-    qcr_config['frame_generator'] = 'frames'
-    qcr_config['frame_accumulator'] = 'polarity'
-    _ = get_dataset(qcr_config, dataset_name, reference_name)
-    _ = get_dataset(qcr_config, dataset_name, query_name)
-
     timewindow_str = _timewindow_str(timewindow)
     ref_dir = os.path.join(config['data_path'], 'qcr_event', reference_name,
                            f"{reference_name}-{config['frame_generator']}-{timewindow_str}")
     query_dir = os.path.join(config['data_path'], 'qcr_event', query_name,
                              f"{query_name}-{config['frame_generator']}-{timewindow_str}")
 
-    num_ref_files = _count_npy(ref_dir)
-    num_query_files = _count_npy(query_dir)
-    if num_ref_files <= 0 or num_query_files <= 0:
-        raise ValueError(f"Missing frames in {ref_dir} ({num_ref_files}) or {query_dir} ({num_query_files}).")
-
     nominal_ms = float(timewindow) if isinstance(timewindow, (int, float)) else 1000.0
 
-    eff_ref_ms = _load_eff_ms(ref_dir, fallback_ms=nominal_ms)
-    eff_qry_ms = _load_eff_ms(query_dir, fallback_ms=nominal_ms)
+    num_ref_files, eff_ref_ms = _frame_store_info(ref_dir, fallback_ms=nominal_ms)
+    num_query_files, eff_qry_ms = _frame_store_info(query_dir, fallback_ms=nominal_ms)
 
     try:
-        ref_knots = dataset_config['other']['gt_times'][reference_name]
-        qry_knots = dataset_config['other']['gt_times'][query_name]
+        ref_knots = _validate_knots(reference_name, dataset_config['other']['gt_times'][reference_name])
+        qry_knots = _validate_knots(query_name, dataset_config['other']['gt_times'][query_name])
     except KeyError as e:
         raise KeyError(f"GT times missing for {e.args[0]} in dataset_config['other']['gt_times']")
 

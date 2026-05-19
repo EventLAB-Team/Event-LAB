@@ -18,6 +18,7 @@ datasets/rpg_e2vid/
 
 # Output directories
 output/
+logs/
 
 # Other
 .vscode/

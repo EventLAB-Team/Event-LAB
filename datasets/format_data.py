@@ -16,6 +16,7 @@ import requests
 from tqdm import tqdm
 from typing import Optional, Tuple
 from pathlib import Path
+from loguru import logger
 
 EVENT_T_KEYS = ("t", "timestamp", "timestamps", "time", "times")
 EVENT_X_KEYS = ("x", "x_coordinate", "x_coordinates", "u", "col", "column")
@@ -89,7 +90,7 @@ def stream_event_windows_raw(
             w_start_raw = max(sec_to_raw(start_time_sec, time_scale), t0_raw)
 
         if w_start_raw >= tN_raw:
-            print(f"Warning: stream start is beyond event file end (start_raw={w_start_raw}, file_end_raw={tN_raw})")
+            logger.warning(f"Warning: stream start is beyond event file end (start_raw={w_start_raw}, file_end_raw={tN_raw})")
             return
 
         x_buf = np.empty(0, dtype=np.int64)
@@ -438,7 +439,7 @@ def _linear_hot_pixels(hot_pixels, width, height):
     else:
         hot_lin = np.empty((0,), dtype=np.int64)
 
-    print(f"Hot pixel filtering enabled: {len(hot_lin)} pixels will be excluded")
+    logger.info(f"Hot pixel filtering enabled: {len(hot_lin)} pixels will be excluded")
     return hot_lin
 
 
@@ -457,10 +458,10 @@ def _record_out_of_bounds(owner, x, y, invalid_mask):
 
     invalid_x = x[invalid_mask]
     invalid_y = y[invalid_mask]
-    print("Warning: Found out-of-bounds events. Example ranges:")
-    print(f"  X range: {invalid_x.min()} - {invalid_x.max()} (valid: 0 - {owner.width-1})")
-    print(f"  Y range: {invalid_y.min()} - {invalid_y.max()} (valid: 0 - {owner.height-1})")
-    print("  Will continue counting but suppress further warnings...")
+    logger.warning("Found out-of-bounds events. Example ranges:")
+    logger.warning(f"  X range: {invalid_x.min()} - {invalid_x.max()} (valid: 0 - {owner.width-1})")
+    logger.warning(f"  Y range: {invalid_y.min()} - {invalid_y.max()} (valid: 0 - {owner.height-1})")
+    logger.warning("  Will continue counting but suppress further warnings...")
     owner.warned_already = True
 
 
@@ -556,8 +557,8 @@ class BagEventFormatter(DataFormatter):
     
     def format_to_hdf5(self, input_path, output_path):
         """Convert bag file to HDF5 format (events only)"""
-        print(f"Converting bag file: {input_path} → {output_path}")
-        
+        logger.info(f"Converting bag file: {input_path} → {output_path}")
+
         # Get format configuration
         format_config = self.data_config['format']['data']
         contents = format_config.get('contents', [])
@@ -567,15 +568,15 @@ class BagEventFormatter(DataFormatter):
         
         if not event_contents:
             raise ValueError(f"No event topics found in contents: {contents}")
-        
-        print(f"Event topics to process: {event_contents}")
-        
+
+        logger.info(f"Event topics to process: {event_contents}")
+
         with self.rosbag.Bag(input_path, 'r') as bag:
             # Get bag info and find available event topics
             info = bag.get_type_and_topic_info()
             available_topics = set(info[1].keys())
-            
-            print(f"Available topics in bag: {list(available_topics)}")
+
+            logger.info(f"Available topics in bag: {list(available_topics)}")
 
             # Find which event topics actually exist in the bag
             valid_event_topics = []
@@ -586,7 +587,7 @@ class BagEventFormatter(DataFormatter):
                     # Try to find similar topics
                     similar_topics = [t for t in available_topics if 'event' in t.lower()]
                     if similar_topics:
-                        print(f"Topic {event_topic} not found, but found similar: {similar_topics}")
+                        logger.warning(f"Topic {event_topic} not found, but found similar: {similar_topics}")
                         valid_event_topics.extend(similar_topics)
             
             if not valid_event_topics:
@@ -594,8 +595,8 @@ class BagEventFormatter(DataFormatter):
             
             # Use the first valid event topic
             event_topic = valid_event_topics[0]
-            print(f"Processing event topic: {event_topic}")
-            
+            logger.info(f"Processing event topic: {event_topic}")
+
             with h5py.File(output_path, 'w') as h5f:
                 self._create_events_structure(h5f, bag, event_topic)
                 self._process_event_messages(h5f, bag, event_topic)
@@ -609,9 +610,9 @@ class BagEventFormatter(DataFormatter):
                 h5f.attrs['formatter'] = 'BagEventFormatter'
                 
                 self._print_summary(h5f)
-        
-        print(f"✓ Conversion complete: {output_path}")
-    
+
+        logger.info(f"✓ Conversion complete: {output_path}")
+
     def _create_events_structure(self, h5f, bag, event_topic):
         """Create HDF5 structure for events"""
         info = bag.get_type_and_topic_info()
@@ -640,11 +641,11 @@ class BagEventFormatter(DataFormatter):
         events_group.attrs['message_type'] = getattr(topic_info, 'msg_type', 'unknown')
         events_group.attrs['message_count'] = msg_count
         events_group.attrs['frequency'] = getattr(topic_info, 'frequency', 0.0)
-        
-        print(f"Created HDF5 structure for {msg_count} event messages")
-        print(f"Message type: {events_group.attrs['message_type']}")
-        print(f"Frequency: {events_group.attrs['frequency']:.2f} Hz")
-    
+
+        logger.info(f"Created HDF5 structure for {msg_count} event messages")
+        logger.info(f"Message type: {events_group.attrs['message_type']}")
+        logger.info(f"Frequency: {events_group.attrs['frequency']:.2f} Hz")
+
     def _process_event_messages(self, h5f, bag, event_topic):
         """Process event messages from bag"""
         info = bag.get_type_and_topic_info()
@@ -658,9 +659,9 @@ class BagEventFormatter(DataFormatter):
                 num_events = self._extract_and_store_events(events_group, msg, timestamp)
                 total_events_processed += num_events
                 pbar.update(1)
-        
-        print(f"Processed {total_events_processed:,} total events from {total_messages} messages")
-    
+
+        logger.info(f"Processed {total_events_processed:,} total events from {total_messages} messages")
+
     def _extract_and_store_events(self, events_group, msg, timestamp):
         """Extract events from message and store in HDF5"""
         events = []
@@ -700,11 +701,11 @@ class BagEventFormatter(DataFormatter):
             
             elif hasattr(msg, 'data') and hasattr(msg, 'width') and hasattr(msg, 'height'):
                 # Some custom event formats store raw data
-                print("Warning: Custom event format detected - may need manual adaptation")
+                logger.warning("Custom event format detected - may need manual adaptation")
                 return 0
                 
         except Exception as e:
-            print(f"Warning: Could not process event message: {e}")
+            logger.warning(f"Could not process event message: {e}")
             return 0
         
         if not events:
@@ -732,31 +733,31 @@ class BagEventFormatter(DataFormatter):
     def _print_summary(self, h5f):
         """Print formatting summary"""
         if 'events' not in h5f:
-            print("No events found in HDF5 file")
+            logger.warning("No events found in HDF5 file")
             return
             
         events_group = h5f['events']
         num_events = events_group['x'].shape[0]
-        
-        print(f"\n=== Event Formatting Summary ===")
-        print(f"Total events: {num_events:,}")
-        
+
+        logger.info(f"\n=== Event Formatting Summary ===")
+        logger.info(f"Total events: {num_events:,}")
+
         if num_events > 0:
-            print(f"X range: {events_group['x'][:].min()} - {events_group['x'][:].max()}")
-            print(f"Y range: {events_group['y'][:].min()} - {events_group['y'][:].max()}")
-            print(f"Time range: {events_group['t'][:].min()} - {events_group['t'][:].max()} ns")
-            
+            logger.info(f"X range: {events_group['x'][:].min()} - {events_group['x'][:].max()}")
+            logger.info(f"Y range: {events_group['y'][:].min()} - {events_group['y'][:].max()}")
+            logger.info(f"Time range: {events_group['t'][:].min()} - {events_group['t'][:].max()} ns")
+
             # Calculate statistics
             time_span_ns = events_group['t'][:].max() - events_group['t'][:].min()
             duration_seconds = time_span_ns / 1e9
             event_rate = num_events / duration_seconds if duration_seconds > 0 else 0
-            
-            print(f"Duration: {duration_seconds:.2f} seconds")
-            print(f"Average event rate: {event_rate:.0f} events/second")
-            
+
+            logger.info(f"Duration: {duration_seconds:.2f} seconds")
+            logger.info(f"Average event rate: {event_rate:.0f} events/second")
+
             # File size
             total_size_mb = sum([events_group[key].nbytes for key in ['x', 'y', 't', 'p']]) / (1024*1024)
-            print(f"HDF5 file size: {total_size_mb:.1f} MB")
+            logger.info(f"HDF5 file size: {total_size_mb:.1f} MB")
 
 class GeneralizedHDF5Formatter:
     """Main formatter class that delegates to specific formatters"""
@@ -788,8 +789,8 @@ class GeneralizedHDF5Formatter:
         
         # Perform formatting
         formatter.format_to_hdf5(input_path, output_path)
-        
-        print(f"✓ Data formatting complete using {formatter_class.__name__}")
+
+        logger.info(f"✓ Data formatting complete using {formatter_class.__name__}")
 
 def format_sequence_data(config, data_config, dataset_name, sequence_name):
     """
@@ -814,11 +815,11 @@ def format_sequence_data(config, data_config, dataset_name, sequence_name):
         raise FileNotFoundError(f"Input file not found: {input_file}")
     
     if os.path.exists(output_file):
-        print(f"Formatted file already exists: {output_file}")
+        logger.info(f"Formatted file already exists: {output_file}")
         return
-    
-    print(f"Formatting {input_file} to {output_file}")
-    
+
+    logger.info(f"Formatting {input_file} to {output_file}")
+
     # Create formatter and format
     formatter = GeneralizedHDF5Formatter(config, data_config, dataset_name, sequence_name)
     formatter.format_data(input_file, output_file)
@@ -1217,7 +1218,7 @@ class PolarityFrameAccumulator(FrameAccumulator):
             self._torch = None
             self._device = None
         backend = self._device.type if self._device is not None else "numpy"
-        print(f"PolarityFrameAccumulator initialized. torch support: {'yes' if self._torch is not None else 'no'}, device: {backend}")
+        logger.info(f"PolarityFrameAccumulator initialized. torch support: {'yes' if self._torch is not None else 'no'}, device: {backend}")
         self._hot_lin = _linear_hot_pixels(self.hot_pixels, self.width, self.height)
 
     def _filter_hot_pixels(self, x, y):
@@ -1279,7 +1280,7 @@ class PolarityFrameAccumulator(FrameAccumulator):
                     return frame.view(2, self.height, self.width).permute(1, 2, 0).cpu().numpy()
             except Exception as exc:
                 if not self._warned_torch_fallback:
-                    print(f"Warning: torch accumulation failed on device '{self._device}'; falling back to NumPy. Error: {exc}")
+                    logger.warning(f"torch accumulation failed on device '{self._device}'; falling back to NumPy. Error: {exc}")
                     self._warned_torch_fallback = True
 
         frame = np.zeros((self.height * self.width, 2), dtype=np.float32)
@@ -1931,10 +1932,10 @@ class GeneralizedFrameBuilder:
         """
 
         os.makedirs(output_dir, exist_ok=True)
-        print(f"Building frames: {hdf5_path} → {output_dir}")
-        print(f"Accumulator: {self.accumulator_type}")
+        logger.info(f"Building frames: {hdf5_path} → {output_dir}")
+        logger.info(f"Accumulator: {self.accumulator_type}")
         if self.accumulator_type != "eventcount":
-            print(f"Requested time window: {timewindow_ns/1e6:.1f} ms")
+            logger.info(f"Requested time window: {timewindow_ns/1e6:.1f} ms")
 
         with h5py.File(hdf5_path, "r", swmr=True,
                     rdcc_nbytes=rdcc_nbytes, rdcc_nslots=rdcc_nslots, rdcc_w0=0.0) as h5f:
@@ -1959,7 +1960,7 @@ class GeneralizedFrameBuilder:
                         'us' if scale == 1e6 else
                         'ms' if scale == 1e3 else
                         's'  if scale == 1.0 else f'{scale:g} ticks/s')
-            print(f"Time unit detected: {unit_str}")
+            logger.info(f"Time unit detected: {unit_str}")
 
             offset_ticks = int(round((offset_ns / 1e9) * scale)) if offset_ns else None
 
@@ -1967,7 +1968,7 @@ class GeneralizedFrameBuilder:
             t0_raw, tN_raw = self._read_first_last_t(ds["t"], n_total)
             start_tick = max(t0_raw, offset_ticks) if offset_ticks is not None else t0_raw
             if int(tN_raw) <= int(start_tick):
-                print("Warning: No events after offset; nothing to do.")
+                logger.warning("No events after offset; nothing to do.")
                 return
 
             # ---- Index bounds via HDF5-safe binary search ----
@@ -1981,14 +1982,14 @@ class GeneralizedFrameBuilder:
             if self.accumulator_type == "eventcount":
                 max_ev = max_events if max_events is not None else self.accumulator.max_events
 
-                print(f"Total events (file): {n_total:,}")
-                print("Processing by max events/frame (no fixed time window).")
+                logger.info(f"Total events (file): {n_total:,}")
+                logger.info("Processing by max events/frame (no fixed time window).")
 
                 # Integer ceil without numpy/arrays
                 num_events = max(1, int(end_idx - start_idx))
                 denom      = max(1, int(max_ev))
                 est_frames = (num_events + denom - 1) // denom
-                print(f"Estimated frames (rough): {est_frames:,}")
+                logger.info(f"Estimated frames (rough): {est_frames:,}")
 
                 self._create_metadata_file(
                     output_dir=output_dir,
@@ -2028,10 +2029,10 @@ class GeneralizedFrameBuilder:
                 total_frames = min(total_frames, int(max_frames))
 
             duration_sec = (int(tN_raw) - int(start_tick)) / float(scale)
-            print(f"Total events (file): {n_total:,}")
-            print(f"Effective window: {window_ticks/scale*1e3:.3f} ms")
-            print(f"Effective duration: {duration_sec:.2f} s")
-            print(f"Frames to generate: {total_frames:,}")
+            logger.info(f"Total events (file): {n_total:,}")
+            logger.info(f"Effective window: {window_ticks/scale*1e3:.3f} ms")
+            logger.info(f"Effective duration: {duration_sec:.2f} s")
+            logger.info(f"Frames to generate: {total_frames:,}")
 
             # Metadata
             self._create_metadata_file(
@@ -2219,20 +2220,20 @@ class GeneralizedFrameBuilder:
                     metadata['hot_pixels'] = list(self.hot_pixels)
                 else:
                     # Unknown type, don't save coordinates
-                    print(f"Warning: hot_pixels has unexpected type {type(self.hot_pixels)}, not saving coordinates")
+                    logger.warning(f"hot_pixels has unexpected type {type(self.hot_pixels)}, not saving coordinates")
                     metadata['hot_pixels'] = []
             except Exception as e:
-                print(f"Warning: Could not save hot pixels to metadata: {e}")
+                logger.warning(f"Could not save hot pixels to metadata: {e}")
                 metadata['hot_pixels'] = []
         
         metadata_path = os.path.join(output_dir, 'metadata.json')
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=2)
-        
-        print(f"✓ Metadata saved: {metadata_path}")
+
+        logger.info(f"✓ Metadata saved: {metadata_path}")
         if self.hot_pixels is not None:
-            print(f"  Hot pixel filtering: {len(self.hot_pixels)} pixels excluded")
-    
+            logger.info(f"  Hot pixel filtering: {len(self.hot_pixels)} pixels excluded")
+
     def _save_frame_preview(self, frame, output_dir, frame_idx):
         """Save a preview image of the frame"""
         try:
@@ -2284,20 +2285,20 @@ class GeneralizedFrameBuilder:
     
     def _print_processing_summary(self):
         """Print summary of frame processing including out-of-bounds and hot pixel statistics"""
-        print(f"\n=== Frame Processing Summary ===")
-        
+        logger.info(f"\n=== Frame Processing Summary ===")
+
         if hasattr(self.accumulator, 'total_out_of_bounds') and self.accumulator.total_out_of_bounds > 0:
-            print(f"Total out-of-bounds events filtered: {self.accumulator.total_out_of_bounds:,}")
-            print(f"Camera dimensions used: {self.width} x {self.height}")
-            print(f"This suggests the camera dimensions might need adjustment.")
+            logger.info(f"Total out-of-bounds events filtered: {self.accumulator.total_out_of_bounds:,}")
+            logger.info(f"Camera dimensions used: {self.width} x {self.height}")
+            logger.info(f"This suggests the camera dimensions might need adjustment.")
         
         if hasattr(self.accumulator, 'total_hot_pixels_filtered') and self.accumulator.total_hot_pixels_filtered > 0:
-            print(f"Total hot pixel events filtered: {self.accumulator.total_hot_pixels_filtered:,}")
-            print(f"Hot pixels filtered: {len(self.hot_pixels) if self.hot_pixels is not None else 0}")
-        
+            logger.info(f"Total hot pixel events filtered: {self.accumulator.total_hot_pixels_filtered:,}")
+            logger.info(f"Hot pixels filtered: {len(self.hot_pixels) if self.hot_pixels is not None else 0}")
+
         if (not hasattr(self.accumulator, 'total_out_of_bounds') or self.accumulator.total_out_of_bounds == 0) and \
            (not hasattr(self.accumulator, 'total_hot_pixels_filtered') or self.accumulator.total_hot_pixels_filtered == 0):
-            print(f"✓ Frame processing completed successfully with no events filtered.")
+            logger.info(f"✓ Frame processing completed successfully with no events filtered.")
 
 class E2VIDReconstructor:
     """
@@ -2329,8 +2330,9 @@ class E2VIDReconstructor:
         if not os.path.isfile(self.path_to_e2vid_model):
             raise FileNotFoundError(f"E2VID model not found at: {self.path_to_e2vid_model}")
 
-    def build_frames(self, sequence_name, hdf5_path, output_dir, timewindow_ms, offset_ns=None, max_frames=None):
-        print(f"Time window: {timewindow_ms:.1f} ms")
+    def build_frames(self, sequence_name, hdf5_path, output_dir, timewindow_ms, offset_ns=None,
+                     max_frames=None, time_scale=None):
+        logger.info(f"Time window: {timewindow_ms:.1f} ms")
         """
         Builds frames from an HDF5 event data file using the E2VID model.
 
@@ -2341,14 +2343,19 @@ class E2VIDReconstructor:
             offset_ns (int, optional): Start time offset in nanoseconds. Defaults to None.
             max_frames (int, optional): Maximum number of frames to generate. Defaults to None.
         """
-        print(f"Building frames with E2VID: {hdf5_path} -> {output_dir}")
+        logger.info(f"Building frames with E2VID: {hdf5_path} -> {output_dir}")
 
         os.makedirs(output_dir, exist_ok=True)
         # get parent dir to hdf5_path
         hdf5_parent_dir = os.path.dirname(hdf5_path)
         event_file_path_txt = os.path.join(hdf5_parent_dir, f'{sequence_name}_e2vid_events.txt')
 
-        start_time_ns = self._prepare_event_data(hdf5_path, event_file_path_txt, offset_ns)
+        start_time_ns = self._prepare_event_data(
+            hdf5_path,
+            event_file_path_txt,
+            offset_ns,
+            time_scale=time_scale,
+        )
 
         if start_time_ns is None:
             start_time_ns = 0
@@ -2359,17 +2366,17 @@ class E2VIDReconstructor:
 
         self._create_metadata_file(output_dir, timewindow_ms, start_time_ns, max_frames)
 
-        print("\n=== E2VID Frame Processing Summary ===")
-        print(f"✓ Frame processing completed successfully.")
+        logger.info("\n=== E2VID Frame Processing Summary ===")
+        logger.info(f"✓ Frame processing completed successfully.")
 
-    def _prepare_event_data(self, hdf5_path, output_txt_path, offset_ns):
+    def _prepare_event_data(self, hdf5_path, output_txt_path, offset_ns, time_scale=None):
         """
         Extracts events from an HDF5 file and saves them to a text file
         in the format required by E2VID: first line "W H", then lines "t[s] x y p".
         Timestamps in HDF5 may be ns/us/ms/seconds. We detect units from the
         median positive time delta and output seconds starting at 0.0.
         """
-        print("Preparing event data for E2VID...")
+        logger.info("Preparing event data for E2VID...")
         self.hdf5_path = hdf5_path
 
         with h5py.File(hdf5_path, 'r') as h5f:
@@ -2386,40 +2393,133 @@ class E2VIDReconstructor:
             y_ds = ds["y"]
             p_ds = ds["p"]
 
-            s_per_tick = _infer_seconds_per_tick(t_ds)
+            s_per_tick = GeneralizedFrameBuilder._coerce_seconds_per_tick(time_scale)
+            scale_source = "dataset config"
+            if s_per_tick is None:
+                s_per_tick = _infer_seconds_per_tick(t_ds)
+                scale_source = "inferred"
+
             t0_raw = float(t_ds[0])
-            start_time_s = t0_raw * s_per_tick
+            t0_s = t0_raw * s_per_tick
+            start_time_s = t0_s
+            start_tick = int(t_ds[0])
             if offset_ns:
-                start_time_s = max(start_time_s, float(offset_ns) * 1e-9)
+                offset_s = float(offset_ns) * 1e-9
+                if offset_s > start_time_s:
+                    start_time_s = offset_s
+                    start_tick = int(np.ceil(offset_s / s_per_tick))
 
             start_time_ns = int(round(start_time_s * 1e9))
+            expected_duration_s = max(0.0, float(t_ds[n - 1]) * s_per_tick - start_time_s)
+            logger.info(
+                f"E2VID timestamp scale: {scale_source}, seconds_per_tick={s_per_tick:g}, "
+                f"expected duration={expected_duration_s:.3f}s"
+            )
 
             if os.path.exists(output_txt_path):
-                print(f"Event text file already exists: {output_txt_path}")
-                dt_med = _median_dt_from_times(t_ds)
-                t1_raw = float(t_ds[1]) if n > 1 else t0_raw
-                print(f"[t] dtype={t_ds.dtype} t0={t0_raw} t1={t1_raw} "
-                      f"dt_med={dt_med} inferred_s_per_tick={s_per_tick}")
-                return start_time_ns
+                if self._event_text_matches_expected_duration(output_txt_path, expected_duration_s):
+                    logger.info(f"Event text file already exists: {output_txt_path}")
+                    dt_med = _median_dt_from_times(t_ds)
+                    t1_raw = float(t_ds[1]) if n > 1 else t0_raw
+                    logger.info(f"[t] dtype={t_ds.dtype} t0={t0_raw} t1={t1_raw} "
+                                f"dt_med={dt_med} seconds_per_tick={s_per_tick}")
+                    return start_time_ns
 
-            with open(output_txt_path, 'w') as f:
-                f.write(f"{self.width} {self.height}\n")
+                logger.warning(
+                    f"Existing E2VID text file duration does not match {scale_source} "
+                    f"timestamp scale; regenerating {output_txt_path}"
+                )
+
+            start_idx = GeneralizedFrameBuilder._searchsorted_h5(
+                t_ds,
+                start_tick,
+                side="left",
+                n_total=n,
+            )
+
+            tmp_txt_path = f"{output_txt_path}.tmp"
+            with open(tmp_txt_path, 'wb') as f:
+                f.write(f"{self.width} {self.height}\n".encode("ascii"))
                 chunk_size = 2_000_000
-                for i0 in tqdm(range(0, n, chunk_size), desc="Exporting events"):
+                for i0 in tqdm(range(start_idx, n, chunk_size), desc="Exporting events"):
                     i1 = min(n, i0 + chunk_size)
                     t = np.asarray(t_ds[i0:i1], dtype=np.float64) * s_per_tick
                     x = np.asarray(x_ds[i0:i1], dtype=np.int32)
                     y = np.asarray(y_ds[i0:i1], dtype=np.int32)
                     if p_ds is None:
-                        p = np.zeros_like(x, dtype=np.uint8)
+                        p = np.zeros_like(x, dtype=np.int16)
                     else:
-                        p = (np.asarray(p_ds[i0:i1]) > 0).astype(np.uint8)
+                        p = (np.asarray(p_ds[i0:i1]) > 0).astype(np.int16)
 
                     t -= start_time_s
-                    for ti, xi, yi, pi in zip(t, x, y, p):
-                        f.write(f"{ti:.9f} {int(xi)} {int(yi)} {int(pi)}\n")
+                    self._write_event_text_chunk(f, t, x, y, p)
+
+            os.replace(tmp_txt_path, output_txt_path)
 
             return start_time_ns
+
+    def _event_text_matches_expected_duration(self, path, expected_duration_s, rel_tol=0.02, abs_tol=1.0):
+        last_line = self._read_last_nonempty_line(path)
+        if last_line is None:
+            return False
+
+        try:
+            last_t = float(last_line.split()[0])
+        except (IndexError, ValueError):
+            return False
+
+        tolerance = max(float(abs_tol), abs(float(expected_duration_s)) * float(rel_tol))
+        return abs(last_t - float(expected_duration_s)) <= tolerance
+
+    def _read_last_nonempty_line(self, path, block_size=8192):
+        with open(path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            position = f.tell()
+            buffer = b""
+
+            while position > 0:
+                read_size = min(block_size, position)
+                position -= read_size
+                f.seek(position)
+                buffer = f.read(read_size) + buffer
+                lines = buffer.splitlines()
+                if len(lines) > 1 or position == 0:
+                    for line in reversed(lines):
+                        if line.strip():
+                            return line.decode("ascii", errors="ignore").strip()
+
+        return None
+
+    def _write_event_text_chunk(self, file_obj, t, x, y, p):
+        """
+        Write one E2VID event chunk as whitespace-delimited text.
+
+        pyarrow's CSV writer avoids a Python-level write per event. If pyarrow
+        is unavailable, keep the original simple writer as a compatibility path.
+        """
+        try:
+            import pyarrow as pa
+            import pyarrow.csv as pacsv
+        except ImportError:
+            for ti, xi, yi, pi in zip(t, x, y, p):
+                file_obj.write(f"{ti:.9f} {int(xi)} {int(yi)} {int(pi)}\n".encode("ascii"))
+            return
+
+        table = pa.table({
+            "t": t,
+            "x": x,
+            "y": y,
+            "p": p,
+        })
+        pacsv.write_csv(
+            table,
+            file_obj,
+            write_options=pacsv.WriteOptions(
+                include_header=False,
+                delimiter=" ",
+                quoting_style="none",
+            ),
+        )
 
     def _run_e2vid_reconstruction(self, event_file_path, output_dir, timewindow_ms):
         """
@@ -2428,7 +2528,7 @@ class E2VIDReconstructor:
         if self.accumulator_type == "eventcount":
             # load the reference metadata to get the average events per frame
             command = (
-                f'python '
+                f'python -u '
                 f'{self.run_reconstruction_script} '
                 f'--i {event_file_path} '
                 f'--path_to_model {self.path_to_e2vid_model} '
@@ -2440,7 +2540,7 @@ class E2VIDReconstructor:
             )
         elif self.window_type == "timewindow":
             command = (
-                f'python '
+                f'python -u '
                 f'{self.run_reconstruction_script} '
                 f'--i {event_file_path} '
                 f'--path_to_model {self.path_to_e2vid_model} '
@@ -2451,7 +2551,7 @@ class E2VIDReconstructor:
             )
         else:
             command = (
-                f'python '
+                f'python -u '
                 f'{self.run_reconstruction_script} '
                 f'--i {event_file_path} '
                 f'--path_to_model {self.path_to_e2vid_model} '
@@ -2462,7 +2562,7 @@ class E2VIDReconstructor:
                 f'--hot_pixels_file {self.hot_pixels_file}'
             )
         construct_cmd = ["pixi", "run", "-e", "e2vid", "bash", "-c", command]
-        print("Running E2VID reconstruction...")
+        logger.info("Running E2VID reconstruction...")
         subprocess.run(construct_cmd, text=True)
         self.output_dir = output_dir
 
@@ -2470,7 +2570,7 @@ class E2VIDReconstructor:
         """
         Converts the reconstructed images to .npy files.
         """
-        print("Processing and saving reconstructed frames...")
+        logger.info("Processing and saving reconstructed frames...")
         reconstruction_dir = os.path.join(e2vid_output_dir, 'reconstruction')
         image_files = sorted([f for f in os.listdir(reconstruction_dir) if f.endswith('.png')])
 
@@ -2519,7 +2619,7 @@ class E2VIDReconstructor:
         metadata_path = os.path.join(output_dir, 'metadata.json')
         with open(metadata_path, 'w') as f:
             json.dump(metadata, f, indent=4)
-        print(f"✓ Metadata saved to {metadata_path}")
+        logger.info(f"✓ Metadata saved to {metadata_path}")
 
 def build_event_frames(hdf5_path, config, data_config, sequence_name, timewindow,
                       width, height, frames_dir, window_type, accumulator_type, hot_pixels=None, reference=False, max_events=None):
@@ -2554,11 +2654,11 @@ def build_event_frames(hdf5_path, config, data_config, sequence_name, timewindow
         else:
             accumulator_type = config.get('frame_accumulator', accumulator_type or 'count')
 
-        print(f"Building frames for sequence: {sequence_name}")
+        logger.info(f"Building frames for sequence: {sequence_name}")
         if offset_sec is not None:
-            print(f"Using offset: {offset_sec} seconds")
+            logger.info(f"Using offset: {offset_sec} seconds")
         if hot_pixels is not None:
-            print(f"Hot pixel filtering: {len(hot_pixels)} pixels will be excluded")
+            logger.info(f"Hot pixel filtering: {len(hot_pixels)} pixels will be excluded")
 
         max_events_per_frame = max_events
         if accumulator_type == 'eventcount' and max_events_per_frame is None:
@@ -2585,7 +2685,7 @@ def build_event_frames(hdf5_path, config, data_config, sequence_name, timewindow
     else:
         if not os.path.exists('./datasets/rpg_e2vid'):
             e2vid_url = "https://github.com/uzh-rpg/rpg_e2vid.git"
-            print(f"Cloning e2vid repository from {e2vid_url}...")
+            logger.info(f"Cloning e2vid repository from {e2vid_url}...")
             subprocess.run(['git', 'clone', e2vid_url, './datasets/rpg_e2vid'], check=True)
 
             if config.get('reconstruction_model', 'e2vid') == 'firenet':
@@ -2593,7 +2693,7 @@ def build_event_frames(hdf5_path, config, data_config, sequence_name, timewindow
             else:
                 model_url = "https://drive.usercontent.google.com/u/0/uc?id=1q0rnm8OUIHk-II39qpxhp0tqBfIOK-7M&export=download"
             model_path = f"./datasets/rpg_e2vid/model/E2VID_{config['reconstruction_model']}.pth.tar"
-            print(f"Downloading pre-trained model from {model_url}...")
+            logger.info(f"Downloading pre-trained model from {model_url}...")
             os.makedirs(os.path.dirname(model_path), exist_ok=True)
             response = requests.get(model_url, allow_redirects=True)
             response.raise_for_status()
@@ -2617,5 +2717,6 @@ def build_event_frames(hdf5_path, config, data_config, sequence_name, timewindow
             output_dir=frames_dir,
             timewindow_ms=timewindow_ms,
             offset_ns=offset_ns,
-            max_frames=config.get('max_frames', None)
+            max_frames=config.get('max_frames', None),
+            time_scale=parse_timestamp_val_to_scale(data_config),
         )

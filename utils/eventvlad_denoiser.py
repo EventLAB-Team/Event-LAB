@@ -7,8 +7,12 @@ import cv2
 import torch
 import matplotlib.pyplot as plt
 import sys
+from pathlib import Path
 sys.path.append('./baselines/EventVLAD')
 from networks import EventDenoiser  # add other models in build_model if needed
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+from datasets.dataloader import make_frame_source
 
 # ----------------- Model factory -----------------
 def build_model(model_type: str, dep_u: int, dep_s: int, slope: float) -> torch.nn.Module:
@@ -156,8 +160,8 @@ def tensor_to_uint8(img_t):
 
 # ----------------- Main -----------------
 def main():
-    ap = argparse.ArgumentParser(description="Denoise triplets from a folder (supports images and NumPy arrays).")
-    ap.add_argument("--input_dir", help="Folder with inputs (.png/.jpg/.bmp/.tif/.npy/.npz)")
+    ap = argparse.ArgumentParser(description="Denoise triplets from an event frame store.")
+    ap.add_argument("--input_dir", help="Folder containing frames.h5 or legacy frame_*.npy files")
     ap.add_argument("--model_path", required=True, help="Path to model checkpoint")
     ap.add_argument("--model_type", default="event_denoiser", help="Model type (e.g., event_denoiser)")
     ap.add_argument("--dep_u", type=int, default=5, help="Model dep_U (divisibility power)")
@@ -169,21 +173,30 @@ def main():
     ap.add_argument("--stride", type=int, default=1, help="Sliding window stride over triplets")
     ap.add_argument("--show", type=int, default=3, help="Show first N results (0 = headless)")
     ap.add_argument("--save_dir", default=None, help="Optional: save denoised PNGs here")
-    # NumPy handling
-    ap.add_argument("--npy_mode", default="sum", choices=["sum", "pos", "neg", "diff"],
-                    help="How to convert (H,W,2) npy/npz to grayscale")
-    ap.add_argument("--npy_percentile", type=float, default=99.0,
-                    help="Percentile for normalization to [0,1] when scaling NumPy arrays")
+
+    # Kept for compatibility with existing commands/configs.
+    ap.add_argument(
+        "--npy_mode",
+        default="sum",
+        choices=["sum", "pos", "neg", "diff"],
+        help="How to convert polarity frames to grayscale if needed",
+    )
+    ap.add_argument(
+        "--npy_percentile",
+        type=float,
+        default=99.0,
+        help="Percentile for normalization to [0,1]",
+    )
+
     args = ap.parse_args()
 
-    # Collect files (images + numpy arrays)
-    numpy_exts = ("*.npy", "*.npz")
-    files = []
-    for e in numpy_exts:
-        files.extend(glob.glob(os.path.join(args.input_dir, e)))
-    files = sorted(files)
-    if len(files) < 3:
-        raise RuntimeError(f"Need at least 3 inputs in {args.input_dir}; found {len(files)}")
+    # New storage-aware frame source.
+    frame_source = make_frame_source(args.input_dir)
+
+    if len(frame_source) < 3:
+        raise RuntimeError(
+            f"Need at least 3 inputs in {args.input_dir}; found {len(frame_source)}"
+        )
 
     # Build + load model
     print("Building model:", args.model_type)
@@ -197,54 +210,128 @@ def main():
     timings = []
 
     print("Begin testing on", "GPU" if (args.use_gpu and torch.cuda.is_available()) else "CPU")
-    for i in range(0, len(files) - 2, args.stride):
-        f0, f1, f2 = files[i], files[i + 1], files[i + 2]
 
-        # Load as grayscale float in [0,1], handling .npy/.npz or standard images
-        i0 = load_gray_float_any(f0, npy_mode=args.npy_mode, percentile=args.npy_percentile)
-        i1 = load_gray_float_any(f1, npy_mode=args.npy_mode, percentile=args.npy_percentile)
-        i2 = load_gray_float_any(f2, npy_mode=args.npy_mode, percentile=args.npy_percentile)
+    batch_size = 512
+    window = []
+    start_idx = 0
+    processed = 0
 
-        x = prep_input_triplet(i0, i1, i2, size=args.size, dep_u=args.dep_u, rotate180=args.rotate180)
-        if args.use_gpu and torch.cuda.is_available():
-            x = x.cuda(non_blocking=True)
+    for batch in frame_source.iter_batches(batch_size):
+        for frame in batch:
+            frame = np.asarray(frame)
 
-        with torch.no_grad():
-            if args.use_gpu and torch.cuda.is_available():
-                torch.cuda.synchronize()
-            t0 = time.perf_counter()
-            y = net(x)
-            if args.use_gpu and torch.cuda.is_available():
-                torch.cuda.synchronize()
-            t1 = time.perf_counter()
-            timings.append(t1 - t0)
+            # If loader has not already collapsed channels, handle it here.
+            if frame.ndim == 3:
+                if frame.shape[-1] == 2:
+                    if args.npy_mode == "sum":
+                        frame = frame[..., 0] + frame[..., 1]
+                    elif args.npy_mode == "pos":
+                        frame = frame[..., 0]
+                    elif args.npy_mode == "neg":
+                        frame = frame[..., 1]
+                    elif args.npy_mode == "diff":
+                        frame = frame[..., 0] - frame[..., 1]
+                elif frame.shape[0] == 2:
+                    if args.npy_mode == "sum":
+                        frame = frame[0] + frame[1]
+                    elif args.npy_mode == "pos":
+                        frame = frame[0]
+                    elif args.npy_mode == "neg":
+                        frame = frame[1]
+                    elif args.npy_mode == "diff":
+                        frame = frame[0] - frame[1]
+                elif frame.shape[-1] == 1:
+                    frame = frame[..., 0]
+                elif frame.shape[0] == 1:
+                    frame = frame[0]
+                else:
+                    raise ValueError(f"Unsupported frame shape: {frame.shape}")
 
-        den = tensor_to_uint8(y)
-        noisy_mean = tensor_to_uint8(x.mean(dim=1, keepdim=True))  # mean of 3 inputs
+            frame = frame.astype(np.float32, copy=False)
 
-        base = os.path.splitext(os.path.basename(f1))[0]  # center frame name
-        if args.save_dir:
-            out_path = os.path.join(args.save_dir, f"{base}_denoised.png")
-            cv2.imwrite(out_path, den)
+            # Match old NumPy normalization behaviour.
+            vmax = float(np.percentile(np.abs(frame), args.npy_percentile))
+            if not np.isfinite(vmax) or vmax <= 0:
+                vmax = float(np.max(np.abs(frame))) if frame.size else 1.0
+            if not np.isfinite(vmax) or vmax <= 0:
+                vmax = 1.0
 
-        if args.show and shown < args.show:
-            plt.figure(figsize=(8, 4))
-            plt.subplot(1, 2, 1)
-            plt.imshow(noisy_mean, cmap="gray")
-            plt.title(f"Noisy (mean)\n{base}", fontsize=9)
-            plt.axis("off")
-            plt.subplot(1, 2, 2)
-            plt.imshow(den, cmap="gray")
-            plt.title("Denoised", fontsize=9)
-            plt.axis("off")
-            plt.tight_layout()
-            plt.show()
-            shown += 1
+            frame = np.clip(frame / vmax, 0.0, 1.0).astype(np.float32, copy=False)
+
+            window.append(frame)
+
+            if len(window) < 3:
+                continue
+
+            if start_idx % args.stride == 0:
+                i0, i1, i2 = window[0], window[1], window[2]
+
+                x = prep_input_triplet(
+                    i0,
+                    i1,
+                    i2,
+                    size=args.size,
+                    dep_u=args.dep_u,
+                    rotate180=args.rotate180,
+                )
+
+                if args.use_gpu and torch.cuda.is_available():
+                    x = x.cuda(non_blocking=True)
+
+                with torch.no_grad():
+                    if args.use_gpu and torch.cuda.is_available():
+                        torch.cuda.synchronize()
+
+                    t0 = time.perf_counter()
+                    y = net(x)
+
+                    if args.use_gpu and torch.cuda.is_available():
+                        torch.cuda.synchronize()
+
+                    t1 = time.perf_counter()
+                    timings.append(t1 - t0)
+
+                den = tensor_to_uint8(y)
+                noisy_mean = tensor_to_uint8(x.mean(dim=1, keepdim=True))
+
+                # Equivalent to old center-frame naming.
+                base = f"frame_{start_idx + 1:06d}"
+
+                if args.save_dir:
+                    out_path = os.path.join(args.save_dir, f"{base}_denoised.png")
+                    cv2.imwrite(out_path, den)
+
+                if args.show and shown < args.show:
+                    plt.figure(figsize=(8, 4))
+
+                    plt.subplot(1, 2, 1)
+                    plt.imshow(noisy_mean, cmap="gray")
+                    plt.title(f"Noisy (mean)\n{base}", fontsize=9)
+                    plt.axis("off")
+
+                    plt.subplot(1, 2, 2)
+                    plt.imshow(den, cmap="gray")
+                    plt.title("Denoised", fontsize=9)
+                    plt.axis("off")
+
+                    plt.tight_layout()
+                    plt.show()
+                    shown += 1
+
+                processed += 1
+
+            window.pop(0)
+            start_idx += 1
+
+    if processed == 0:
+        raise RuntimeError(
+            f"No triplets processed from {args.input_dir}. "
+            f"Frame count={len(frame_source)}, stride={args.stride}"
+        )
 
     if timings:
         avg = sum(timings) / len(timings)
         print(f"Processed {len(timings)} triplets. Avg time: {avg:.4f}s (per inference)")
-
 
 if __name__ == "__main__":
     main()

@@ -1,13 +1,12 @@
 import os, sys, yaml
 
 from utils import utils
+from loguru import logger
 from datasets.get_data import get_dataset
 from baselines.get_baseline import get_baseline 
 from datasets.groundtruths import generate_ground_truth
 
 def main():
-    # Start the Event-LAB banner
-    utils.start()
     # Load the main configuration file
     with open('config.yaml', 'r') as file:
         config = yaml.safe_load(file)
@@ -15,6 +14,9 @@ def main():
     # Get the experimental details
     baseline_name = sys.argv[1]
     dataset_name = sys.argv[2]
+
+    # Start the Event-LAB banner
+    utils.start(baseline_name, dataset_name)
 
     # Ensure dataset contains .py and .yaml configuration files
     yaml_path = os.path.join("datasets", f"{dataset_name}.yaml")
@@ -28,11 +30,11 @@ def main():
             query_name = sys.argv[4]
 
             # Print experimental details
-            print(f"Running VPR baseline: {baseline_name}")
-            print(f"Dataset: {dataset_name}")
-            print(f"Reference sequence: {reference_name}")
-            print(f"Query sequence: {query_name}")
-            print('')
+            logger.info(f"Running VPR baseline: {baseline_name}")
+            logger.info(f"Dataset: {dataset_name}")
+            logger.info(f"Reference sequence: {reference_name}")
+            logger.info(f"Query sequence: {query_name}")
+            logger.info('')
 
             # Load general config and set the dataset (will download, format, and construct data if not present)
             reference = get_dataset(config, dataset_name, reference_name)
@@ -55,9 +57,6 @@ def main():
 
         except IndexError:
             raise ValueError("Not enough arguments provided. Expected: <baseline>, <dataset>, <reference>, <query>.")
-        
-    elif baseline_name in config["SLAM-Baselines"]: #TODO: Implement SLAM baselines
-        pass
 
     else:
         raise ValueError(f"Baseline {baseline_name} is not recognized. Please check the configuration.")
