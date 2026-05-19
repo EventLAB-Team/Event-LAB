@@ -1,23 +1,25 @@
 # Event-LAB: Towards Standardized Evaluation of Neuromorphic Localization Methods
 
-<table>
-  <tr>
-    <td width="240" align="center">
-      <img src="./assets/logo.gif" alt="Event-LAB logo" width="220" />
-    </td>
-    <td>
-      <p><strong>Event-LAB</strong> is a framework for <strong>easy, reliable evaluation of event-based localization methods</strong> across standardized datasets and pipelines.</p>
-      <p>Using <strong>single command-line invocation</strong>, multiple different event-based methods can be implemented. See the <a href="">Event-LAB documentation</a> for further details.</p>
-      <p>If you use this code in your work, please <strong>cite our paper</strong> (see <a href="#license-and-citation">License &amp; Citation</a>) and consider giving the repo a star! ⭐</p>
-    </td>
-  </tr>
-</table>
+<p align="center">
+  <img src="./assets/logo.gif" alt="Event-LAB logo" width="220"/>
+</p>
 
+![Read the Docs](https://img.shields.io/badge/Read%20the%20Docs-%23000000?style=for-the-badge&logo=readthedocs&logoColor=white)
+[![Documentation Status](https://readthedocs.org/projects/eventlab/badge/?version=latest&style=flat)](https://eventlab.readthedocs.io/en/latest/?badge=latest)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=flat-square)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
 [![QUT Centre for Robotics](https://img.shields.io/badge/collection-QUT%20Robotics-%23043d71?style=flat-square)](https://qcr.ai)
 [![stars](https://img.shields.io/github/stars/EventLAB-Team/Event-LAB.svg?style=flat-square)](https://github.com/EventLAB-Team/Event-LAB/stargazers)
 [![GitHub repo size](https://img.shields.io/github/repo-size/EventLAB-Team/Event-LAB.svg?style=flat-square)](./README.md)
+![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)
+![macOS](https://img.shields.io/badge/mac%20os-000000?style=for-the-badge&logo=macos&logoColor=F0F0F0)
+![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)
+
+**Event-LAB** is a framework for easy, reliable evaluation of event-based localization methods across standardized datasets and pipelines.
+Using **single command-line invocation**, multiple different event-based methods can be implemented. See the [Event-LAB documentation]() for further details.
+
+If you use this code in your work, please **cite our paper** (see [License and Citation](#license-and-citation)) and consider giving the repo a star! ⭐
 
 ## Quick start :dizzy:
 Event-LAB uses [Pixi](https://prefix.dev/docs/pixi/overview) by prefix.dev to manage packages and dependencies to achieve bit-for-bit reproducibility. Follow the instructions below to get started with Event-LAB.
@@ -96,24 +98,24 @@ This will generate a `run_batch.sh` file and execute it.
 ### Implemented baseline methods and datasets
 For the demonstration version of the repository, we have implemented two baseline methods and datasets. The full and final version of the code will be released upon acceptance which includes the other methods. Below is the list of implemented methods and their invocation name:
 
-| Baseline Method | Link | Invocation | 
-|:----------------|:------|:------------:|
-| EventVLAD |  https://github.com/alexjunholee/EventVLAD | eventvlad|
-|Ensemble-Event-VPR | https://github.com/Tobias-Fischer/ensemble-event-vpr | ensemble |
-|LENS | | lens |
-|Sparse-Event-VPR | | sparse_event |
-VPR-Methods | | vprmethods |
+| Baseline | Source | Invocation |
+| --- | --- | --- |
+| EventVLAD | [alexjunholee/EventVLAD](https://github.com/alexjunholee/EventVLAD) | `eventvlad` |
+| Ensemble-Event-VPR | [Tobias-Fischer/ensemble-event-vpr](https://github.com/Tobias-Fischer/ensemble-event-vpr) | `ensemble` |
+| LENS | [AdamDHines/LENS](https://github.com/AdamDHines/LENS) | `lens` |
+| Sparse-Event-VPR | [Tobias-Fischer/sparse-event-vpr](https://github.com/Tobias-Fischer/sparse-event-vpr) | `sparse_event` |
+| VPR-Methods | [gmberton/VPR-methods-evaluation](https://github.com/gmberton/VPR-methods-evaluation) | `vprmethods` |
 
-| Datasets | Link | Invocation | Traverses | 
-|:----------------|:------|:------------|:-------:|
-| Brisbane-Event-VPR |  https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr | brisbane_event | sunset1, sunset2, sunrise, daytime, morning, night
-|NSAVP | https://umautobots.github.io/nsavp | nsavp | R0_RN0, R0_RA0, R0_FS0, F0_FN0, RO_RS0, R1_DA0, R1_FA0, R1_RA0, R0_FA0 |
-|Fast-and-Slow | | fast_slow | r_low1, r_med1, r_high1, q_low1, q_med1, q_high1 |
-|QCR-Event-VPR | | qcr_event | normal1, normal2, normal3, normal4, fast1, fast2, slow1 |
+| Dataset | Source | Invocation |
+| --- | --- | --- |
+| Brisbane-Event-VPR | [TobiasRobotics/brisbane-event-vpr](https://huggingface.co/datasets/TobiasRobotics/brisbane-event-vpr) | `brisbane_event` |
+| NSAVP | [umautobots.github.io/nsavp](https://umautobots.github.io/nsavp) | `nsavp` |
+| Fast-and-Slow | [QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets](https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets) | `fast_slow` |
+| QCR-Event-VPR | [Zenodo record 10494919](https://zenodo.org/records/10494919) | `qcr_event` |
 
 Any combination of implemented baseline methods, datasets and their traverses can be set-up for a reference/query pair to evaluate performance.
 
-## License and citation
+## License and Citation
 This repository is licensed under the permissive [MIT License](./LICENSE). If you use our code, please cite our [paper](https://arxiv.org/abs/2509.14516):
 
 ```
@@ -121,7 +123,6 @@ This repository is licensed under the permissive [MIT License](./LICENSE). If yo
       title={Event-LAB: Towards Standardized Evaluation of Neuromorphic Localization Methods}, 
       author={Adam D. Hines and Alejandro Fontan and Michael Milford and Tobias Fischer},
       year={2026},
-      pages={},
       booktitle={IEEE International Conference on Robotics and Automation}     
 }
 ```
