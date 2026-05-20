@@ -1,7 +1,9 @@
 Event-LAB documentation
 ================================
 
-Event-LAB is standardizing neuromorphic and event-based localization techniques.
+Event-LAB is standardizing neuromorphic and event-based localization techniques. This documentation will guide you through 
+the use of Event-LAB to run the available baselines and datasets, as well as a detailed guide on contributing your own
+baselines and datasets to the project.
 
 Getting Started
 ---------------
@@ -12,12 +14,27 @@ Getting Started
 
    installation
    quickstart
+   attributions
 
-Reference
+Running Event-LAB
 ---------
 
 .. toctree::
    :maxdepth: 2
-   :caption: Reference:
+   :caption: Running Event-LAB:
 
-   api
+   basics
+   config
+   datasets
+   baselines
+
+Contributing to Event-LAB
+--------------------------
+
+.. toctree::
+   :maxdepth: 2
+   :caption: Contributing to Event-LAB:
+
+   overview
+   datasets
+   baselines
