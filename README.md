@@ -15,6 +15,7 @@
 ![macOS](https://img.shields.io/badge/mac%20os-000000?style=for-the-badge&logo=macos&logoColor=F0F0F0)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)
 ![Windows](https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)
+[![Open in Spaces](https://huggingface.co/datasets/huggingface/badges/resolve/main/open-in-hf-spaces-md.svg)](https://huggingface.co/spaces/EventLAB/EventLAB)
 
 **Event-LAB** is a framework for easy, reliable evaluation of event-based localization methods across standardized datasets and pipelines.
 Using **single command-line invocation**, multiple different event-based methods can be implemented. See the [Event-LAB documentation](https://event-lab.readthedocs.io/en/latest/) for further details.

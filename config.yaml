@@ -20,9 +20,9 @@ ground_truth_tolerance: 3 # Distance in metres to build the ground truth toleran
 filter_places_sec: 0.0 # Filter places to be at least this far apart in time (in seconds)
 
 # Frame reconstruction parameters
-timewindows: [250, 500, 750, 1000] # Int value in msec
+timewindows: [1000] # Int value in msec
 num_events: [100000] # Max events per frame, only used if frame_generator is "event_count"
-frame_generator: "reconstruction" # Options: "frames" "reconstruction"
+frame_generator: "frames" # Options: "frames" "reconstruction"
 frame_accumulator: "polarity"    # Options: "eventcount", "polarity"
 reconstruction_model: "e2vid"  # Options: "firenet", "e2vid (default)"
 
