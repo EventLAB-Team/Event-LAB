@@ -2,7 +2,6 @@ Quick start
 ===========
 
 To get started using Event-LAB, the general format for running the code is as follows:
------------
 
 .. code-block:: bash
 

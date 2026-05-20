@@ -17,16 +17,16 @@ Getting Started
    attributions
 
 Running Event-LAB
----------
+-----------------
 
 .. toctree::
    :maxdepth: 2
    :caption: Running Event-LAB:
 
-   basics
    config
    datasets
    baselines
+   batching
 
 Contributing to Event-LAB
 --------------------------
@@ -36,5 +36,5 @@ Contributing to Event-LAB
    :caption: Contributing to Event-LAB:
 
    overview
-   datasets
-   baselines
+   contributing_datasets
+   contributing_baselines

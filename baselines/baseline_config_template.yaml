@@ -1,0 +1,8 @@
+---
+# Template baseline configuration for Event-LAB.
+# Copy this file to baselines/<baseline_name>.yaml and keep only the keys your
+# wrapper reads.
+name: "my_baseline"
+repo_path: "./baselines/my_baseline_repo"
+model_path: "./baselines/my_baseline_repo/model.pth"
+batch_size: 8

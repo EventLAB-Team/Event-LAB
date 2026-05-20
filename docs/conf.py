@@ -22,6 +22,7 @@ templates_path = ["_templates"]
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
 
 html_theme = "sphinx_rtd_theme"
+html_logo = "_static/logo.svg"
 
 html_theme_options = {
     "collapse_navigation": True,
@@ -32,6 +33,14 @@ html_theme_options = {
 }
 
 html_static_path = ["_static"]
+
+html_css_files = [
+    "copybutton.css",
+]
+
+html_js_files = [
+    "copybutton.js",
+]
 
 # Lets Read the Docs set the canonical URL.
 html_baseurl = os.environ.get("READTHEDOCS_CANONICAL_URL", "/")

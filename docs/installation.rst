@@ -12,8 +12,8 @@ not already installed Pixi, run the following command in your teminal:
     
     curl -fsSL https://pixi.sh/install.sh | bash
 
-The provided ``pixi.toml`` and ``pixi.lock`` files in the repository handle all packages and dependencies and the operation of all the various functions in LENS.
-This documentation focuses on using pixi to run evaluation and training scripts.
+The provided ``pixi.toml`` and ``pixi.lock`` files in the repository handle all packages and dependencies and the 
+operation of all the various functions in Event-LAB.
 
 .. note::
 

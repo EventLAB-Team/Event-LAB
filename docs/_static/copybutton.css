@@ -1,0 +1,36 @@
+.highlight {
+    position: relative;
+}
+
+.eventlab-copy-button {
+    position: absolute;
+    top: 0.45rem;
+    right: 0.45rem;
+    z-index: 3;
+    padding: 0.25rem 0.55rem;
+    border: 1px solid #d0d7de;
+    border-radius: 4px;
+    background: #ffffff;
+    color: #24292f;
+    font-size: 0.75rem;
+    line-height: 1.2;
+    cursor: pointer;
+    opacity: 0;
+    transition: opacity 120ms ease-in-out, background 120ms ease-in-out;
+}
+
+.highlight:hover .eventlab-copy-button,
+.highlight:focus-within .eventlab-copy-button,
+.eventlab-copy-button:focus {
+    opacity: 1;
+}
+
+.eventlab-copy-button:hover,
+.eventlab-copy-button:focus {
+    background: #f6f8fa;
+}
+
+.eventlab-copy-button.is-copied {
+    border-color: #2da44e;
+    color: #1a7f37;
+}

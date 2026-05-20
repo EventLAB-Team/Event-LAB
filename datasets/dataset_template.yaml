@@ -1,0 +1,44 @@
+---
+# Template dataset configuration for Event-LAB.
+# Copy this file to datasets/<dataset_name>.yaml and replace the values.
+dataset:
+  name: my_dataset
+  version: "1.0.0"
+  description: "Short dataset description"
+  base_url: "https://example.com/my-dataset"
+  camera: "event_camera_name"
+  resolution: [346, 260]  # Width, Height
+
+sequences:
+  reference_sequence:
+    data:
+      url: "https://example.com/reference_sequence.hdf5"
+    ground_truth:
+      available: true
+      url: "https://example.com/reference_sequence_ground_truth.h5"
+    hot_pixel:
+      available: false
+      url: ""
+
+  query_sequence:
+    data:
+      url: "https://example.com/query_sequence.hdf5"
+    ground_truth:
+      available: true
+      url: "https://example.com/query_sequence_ground_truth.h5"
+    hot_pixel:
+      available: false
+      url: ""
+
+format:
+  data:
+    format: "hdf5"
+    timestamp_val: "ns"
+    time_scale: 1e-9
+  ground_truth: "hdf5"
+  hot_pixel: ""
+
+other:
+  offset:
+    reference_sequence: 0.0
+    query_sequence: 0.0
