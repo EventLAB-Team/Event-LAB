@@ -79,6 +79,70 @@ def _to_seconds(values) -> np.ndarray:
     return t_s
 
 
+def _timestamp_val_to_ticks_per_second(dataset_config) -> float | None:
+    """
+    Parse dataset_config['format']['data']['timestamp_val'] as ticks/second.
+    """
+    val = (dataset_config.get('format', {})
+                         .get('data', {})
+                         .get('timestamp_val', None))
+    if val is None:
+        return None
+
+    if isinstance(val, str):
+        unit = val.strip().lower()
+        if unit in ('ns', 'nanosecond', 'nanoseconds'):
+            return 1e9
+        if unit in ('us', 'usec', 'microsecond', 'microseconds'):
+            return 1e6
+        if unit in ('ms', 'millisecond', 'milliseconds'):
+            return 1e3
+        if unit in ('s', 'sec', 'second', 'seconds'):
+            return 1.0
+        try:
+            scale = float(unit)
+        except ValueError as exc:
+            raise ValueError(f"Unsupported timestamp_val={val!r}") from exc
+    else:
+        scale = float(val)
+
+    if scale <= 0:
+        raise ValueError(f"timestamp_val must be positive, got {val!r}")
+    return scale
+
+
+def _event_frame_ticks_per_second(dataset_config, frames_dir: str) -> float:
+    """
+    Get the timestamp scale for event-count frame center ticks.
+    """
+    meta_path = os.path.join(frames_dir, "metadata.json")
+    if os.path.exists(meta_path):
+        with open(meta_path, 'r') as f:
+            meta = json.load(f)
+        scale = meta.get("ticks_per_second")
+        if scale is not None and float(scale) > 0:
+            return float(scale)
+
+    scale = _timestamp_val_to_ticks_per_second(dataset_config)
+    if scale is not None:
+        return float(scale)
+
+    raise ValueError(
+        f"Cannot determine timestamp scale for event frames in {frames_dir}; "
+        "metadata.json has no ticks_per_second and dataset_config has no timestamp_val."
+    )
+
+
+def _event_frame_ticks_to_seconds(ticks: np.ndarray, ticks_per_second: float) -> np.ndarray:
+    """
+    Convert absolute frame-center ticks to seconds relative to the first frame.
+    """
+    ticks = np.asarray(ticks)
+    if ticks.size == 0:
+        return ticks.astype(float)
+    return (ticks - ticks[0]).astype(np.float64) / float(ticks_per_second)
+
+
 def haversine(lon1, lat1, lon2, lat2) -> float:
     """Meters between two WGS84 lon/lat points."""
     R = 6371.0
@@ -889,9 +953,15 @@ def generate_ground_truth(config,
 
         ref_ticks = np.load(os.path.join(ref_frames_dir, "event_frame_times_ticks.npy"))
         qry_ticks = np.load(os.path.join(qry_frames_dir, "event_frame_times_ticks.npy"))
-        # Convert ticks -> seconds, relative to start
-        ref_frame_times_s = (ref_ticks - ref_ticks[0]) * 1e-9
-        qry_frame_times_s = (qry_ticks - qry_ticks[0]) * 1e-9
+        # Convert ticks -> seconds, relative to start.
+        ref_frame_times_s = _event_frame_ticks_to_seconds(
+            ref_ticks,
+            _event_frame_ticks_per_second(dataset_config, ref_frames_dir),
+        )
+        qry_frame_times_s = _event_frame_ticks_to_seconds(
+            qry_ticks,
+            _event_frame_ticks_per_second(dataset_config, qry_frames_dir),
+        )
     else:
         ref_frame_times_s = None
         qry_frame_times_s = None

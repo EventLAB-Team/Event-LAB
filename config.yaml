@@ -1,6 +1,6 @@
 # General configuration for Event-Lab
 
-data_path: "./datasets/" # Path to the datasets directory
+data_path: "./datasets" # Path to the datasets directory
 output_path: "./output" # Path to save outputs (results, logs, etc.)
 std_format: "hdf5" # Default format for datasets
 max_frames:       # Maximum frames to generate (null = all)
