@@ -26,5 +26,5 @@ def start(method, dataset):
     logger.info('')
     logger.info('*adam.hines@qut.edu.au')
     logger.info('================================================')
-    logger.info('Version 1.0.0 - May 2026')
+    logger.info('Version 1.1.0 - July 2026')
     logger.info('')

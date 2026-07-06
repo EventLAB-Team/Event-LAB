@@ -59,53 +59,55 @@ class EventDataset():
         for seq in self.dataset_sequences:
             self.full_dataset_paths.append(os.path.join(self.dataset_path, seq))
 
-        # Check for existence of a hot pixel file
-        self.hot_pixel_file = os.path.join(self.config['data_path'],
-                                           self.dataset_name,
-                                           self.sequence_name,
-                                           f"{self.sequence_name}_hot_pixels.txt")
+        # HOT PIXEL FILTERING PERFORMED THROUGH EVENTCV
+        # # Check for existence of a hot pixel file
+        # self.hot_pixel_file = os.path.join(self.config['data_path'],
+        #                                    self.dataset_name,
+        #                                    self.sequence_name,
+        #                                    f"{self.sequence_name}_hot_pixels.txt")
         
-        if not os.path.exists(self.hot_pixel_file):
-            if self.data_config['sequences'][self.sequence_name]['hot_pixel']['available']:
-                # Download the hot pixel file if available
-                hot_pixel_url = self.data_config['sequences'][self.sequence_name]['hot_pixel']['url']
-                logger.info(f"Downloading hot pixel file from {hot_pixel_url}")
-                response = requests.get(hot_pixel_url)
-                response.raise_for_status()
-                with open(self.hot_pixel_file, 'wb') as f:
-                    f.write(response.content)
-                logger.info(f"✓ Hot pixel file downloaded: {self.hot_pixel_file}")
+        # if not os.path.exists(self.hot_pixel_file):
+        #     if self.data_config['sequences'][self.sequence_name]['hot_pixel']['available']:
+        #         # Download the hot pixel file if available
+        #         hot_pixel_url = self.data_config['sequences'][self.sequence_name]['hot_pixel']['url']
+        #         logger.info(f"Downloading hot pixel file from {hot_pixel_url}")
+        #         response = requests.get(hot_pixel_url)
+        #         response.raise_for_status()
+        #         with open(self.hot_pixel_file, 'wb') as f:
+        #             f.write(response.content)
+        #         logger.info(f"✓ Hot pixel file downloaded: {self.hot_pixel_file}")
         
         # Download the sequence data if raw data does not exist
         if not os.path.exists(self.dataset_raw):
             download_sequence_data(self.config, self.data_config, self.dataset_name, self.sequence_name)
         
+        # REMOVE DATA FORMATING/GENERATING INDIVIDUAL FILES FOR EVENTCV REPLACEMENT
         # Format the data
-        if not os.path.exists(self.dataset_formatted):
-            format_sequence_data(self.config, self.data_config, self.dataset_name, self.sequence_name)
-            # Get basic dataset info without loading all data
-            self._load_dataset_metadata()
+        # if not os.path.exists(self.dataset_formatted):
+        #     format_sequence_data(self.config, self.data_config, self.dataset_name, self.sequence_name)
+        #     # Get basic dataset info without loading all data
+        #     self._load_dataset_metadata()
     
         # For non-streaming, check if the reconstructed dataset exists, if not, create frames (count and/or reconstruction)
-        for idx, full_dataset_path in enumerate(self.full_dataset_paths):
-            if self.config['stream']:
-                continue
-            if not os.path.exists(full_dataset_path):
-                self._load_dataset_metadata()
-                # Load hot pixels if available
-                self.hot_pixels = self._load_hot_pixels()
-                if self.max_events_list:
-                    # Check and potentially create event frames
-                    self._handle_event_frames(full_dataset_path, 
-                                            self.timewindow_list[idx], 
-                                            self.reconstruction_types[idx], 
-                                            recon=self.config['frame_generator'],
-                                            max_events=self.max_events_list[idx])
-                else:
-                    self._handle_event_frames(full_dataset_path, 
-                                            self.timewindow_list[idx], 
-                                            self.reconstruction_types[idx], 
-                                            recon=self.config['frame_generator'])
+        # for idx, full_dataset_path in enumerate(self.full_dataset_paths):
+        #     if self.config['stream']:
+        #         continue
+        #     if not os.path.exists(full_dataset_path):
+        #         self._load_dataset_metadata()
+        #         # Load hot pixels if available
+        #         self.hot_pixels = self._load_hot_pixels()
+        #         if self.max_events_list:
+        #             # Check and potentially create event frames
+        #             self._handle_event_frames(full_dataset_path, 
+        #                                     self.timewindow_list[idx], 
+        #                                     self.reconstruction_types[idx], 
+        #                                     recon=self.config['frame_generator'],
+        #                                     max_events=self.max_events_list[idx])
+        #         else:
+        #             self._handle_event_frames(full_dataset_path, 
+        #                                     self.timewindow_list[idx], 
+        #                                     self.reconstruction_types[idx], 
+        #                                     recon=self.config['frame_generator'])
 
 
         # download the ground truth, if available

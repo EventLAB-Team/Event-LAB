@@ -49,6 +49,7 @@ huggingface_hub = ">=1.5.0,<2"
 sphinx = ">=8.2.3,<9"
 sphinx-rtd-theme = ">=3.1.0,<4"
 myst-parser = ">=5.1.0,<6"
+eventcv = ">=1.0.0,<2"
 
 [target.linux-64.dependencies]
 cuda-version = "12.*"

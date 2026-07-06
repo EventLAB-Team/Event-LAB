@@ -110,6 +110,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/double-conversion-3.4.0-hecca717_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/empy-3.3.4-pyh9f0ad1d_1.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/et_xmlfile-2.0.0-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/eventcv-1.0.0-py312hc49cf53_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/expat-2.8.0-hecca717_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/expelliarmus-1.1.12-py312h4c3975b_3.conda
@@ -636,6 +637,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-64/double-conversion-3.4.0-hcc62823_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/empy-3.3.4-pyh9f0ad1d_1.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/et_xmlfile-2.0.0-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/osx-64/eventcv-1.0.0-py312h1759cc7_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/expat-2.8.0-hcc62823_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/expelliarmus-1.1.12-py312h2f459f6_3.conda
@@ -1064,6 +1066,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/double-conversion-3.4.0-hf6b4638_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/empy-3.3.4-pyh9f0ad1d_1.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/et_xmlfile-2.0.0-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/osx-arm64/eventcv-1.0.0-py312he05aa71_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/expat-2.8.0-hf6b4638_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/faiss-1.10.0-cpu_openblas_py312_hcaa93c7_0.conda
@@ -1490,6 +1493,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/double-conversion-3.4.0-hac47afa_0.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/empy-3.3.4-pyh9f0ad1d_1.tar.bz2
       - conda: https://conda.anaconda.org/conda-forge/noarch/et_xmlfile-2.0.0-pyhd8ed1ab_1.conda
+      - conda: https://conda.anaconda.org/conda-forge/win-64/eventcv-1.0.0-py312h6d2f47b_2.conda
       - conda: https://conda.anaconda.org/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/expat-2.8.0-hac47afa_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/expelliarmus-1.1.12-py312he06e257_3.conda
@@ -5378,6 +5382,70 @@ packages:
   - pkg:pypi/et-xmlfile?source=hash-mapping
   size: 21908
   timestamp: 1733749746332
+- conda: https://conda.anaconda.org/conda-forge/linux-64/eventcv-1.0.0-py312hc49cf53_2.conda
+  sha256: 2d690f974bf1d752bd5a89f204559daebd146004a92342778bf61253d12c96f8
+  md5: 1d91a63f6adc9f50e0be9cbcdb33f031
+  depends:
+  - python
+  - numpy >=1.24
+  - __glibc >=2.17,<3.0.a0
+  - libstdcxx >=14
+  - libgcc >=14
+  - python_abi 3.12.* *_cp312
+  constrains:
+  - __glibc >=2.17
+  license: Apache-2.0
+  purls:
+  - pkg:pypi/eventcv?source=hash-mapping
+  size: 5862313
+  timestamp: 1783231916125
+- conda: https://conda.anaconda.org/conda-forge/osx-64/eventcv-1.0.0-py312h1759cc7_0.conda
+  sha256: 339cb99d928b9ae05f09b8da2ff09b39f300e0ce8f3cdb739b5d986acdef0f06
+  md5: 7393f8365cbd3e373c12dc2b57da6b6d
+  depends:
+  - python
+  - numpy >=1.24
+  - __osx >=11.0
+  - libcxx >=19
+  - python_abi 3.12.* *_cp312
+  constrains:
+  - __osx >=11.0
+  license: Apache-2.0
+  purls:
+  - pkg:pypi/eventcv?source=hash-mapping
+  size: 4124864
+  timestamp: 1783218156765
+- conda: https://conda.anaconda.org/conda-forge/osx-arm64/eventcv-1.0.0-py312he05aa71_2.conda
+  sha256: 76afb9a1ef59416596627f2cc2daab55dc777a47d13f32998fef944e22853460
+  md5: 073d0466d227e799f5fe73f1c9ef617a
+  depends:
+  - python
+  - numpy >=1.24
+  - __osx >=11.0
+  - libcxx >=19
+  - python_abi 3.12.* *_cp312
+  constrains:
+  - __osx >=11.0
+  license: Apache-2.0
+  purls:
+  - pkg:pypi/eventcv?source=hash-mapping
+  size: 3634986
+  timestamp: 1783231983739
+- conda: https://conda.anaconda.org/conda-forge/win-64/eventcv-1.0.0-py312h6d2f47b_2.conda
+  sha256: c0550be43beba9c018e66494a4fd3f472ddb06dc287f0603e0554cdd269fced5
+  md5: 3d0e6d70a11d2b2965e9ea9fb820df43
+  depends:
+  - python
+  - numpy >=1.24
+  - vc >=14.3,<15
+  - vc14_runtime >=14.44.35208
+  - ucrt >=10.0.20348.0
+  - python_abi 3.12.* *_cp312
+  license: Apache-2.0
+  purls:
+  - pkg:pypi/eventcv?source=hash-mapping
+  size: 4410534
+  timestamp: 1783231957977
 - conda: https://conda.anaconda.org/conda-forge/noarch/exceptiongroup-1.3.1-pyhd8ed1ab_0.conda
   sha256: ee6cf346d017d954255bbcbdb424cddea4d14e4ed7e9813e429db1d795d01144
   md5: 8e662bd460bda79b1ea39194e3c4c9ab

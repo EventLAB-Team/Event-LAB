@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 import utils.functional as FUNC
 from datasets.dataloader import make_frame_source
 from tqdm import tqdm
+import eventcv as ecv
 
 class sparse_event_baseline(EventBaseline):
     def __init__(self):
@@ -47,90 +48,34 @@ class sparse_event_baseline(EventBaseline):
         ref_info = reference.get_dataset_info()
         query_info = query.get_dataset_info()
 
-        ref_name = ref_info['sequence_name']
-        query_name = query_info['sequence_name']
+        self.ref_name = ref_info['sequence_name']
+        self.query_name = query_info['sequence_name']
 
-        # from ref_info['file_path'] dict, find the directory that matches ref/query name and timewindow
-        self.ref_key = [d for d in ref_info['file_path'] if ref_name in d and str(timewindow) in d]
-        self.query_key = [d for d in query_info['file_path'] if query_name in d and str(timewindow) in d]
-        self.ref_name = self.ref_key[0]
-        self.query_name = self.query_key[0]
-        self.ref_directory = ref_info['file_path'][self.ref_key[0]]
-        self.query_directory = query_info['file_path'][self.query_key[0]]
+        # Open reference and query into EventCV
+        reference = ecv.open(ref_info['hdf5_path'], dt_ms=timewindow)
+        query = ecv.open(query_info['hdf5_path'], repr="count", dt_ms=timewindow)
 
-        collapse_polarity = (
-            config["frame_generator"] == "frames"
-            and config["frame_accumulator"] in ("eventcount", "polarity")
-        )
-
-        min_gap_sec = float(config.get("filter_places_sec", 60))
-        chunk_size = int(config.get("frames_chunk_size", 1000))
-
-        ref_source = make_frame_source(
-            self.ref_directory,
-            collapse_polarity=collapse_polarity,
-            min_gap_sec=min_gap_sec,
-            legacy_time_filter_fn=FUNC._apply_time_filter_to_files,
-        )
-
-        query_source = make_frame_source(
-            self.query_directory,
-            collapse_polarity=collapse_polarity,
-            min_gap_sec=min_gap_sec,
-            legacy_time_filter_fn=FUNC._apply_time_filter_to_files,
-        )
-
-        self.ref_dropped_idx = ref_source.dropped_idx.tolist()
-        self.query_dropped_idx = query_source.dropped_idx.tolist()
-
-        self.ref_kept_idx = ref_source.kept_idx.tolist()
-        self.query_kept_idx = query_source.kept_idx.tolist()
-
-        # ------------------------------------------------------------------
-        # Pass 1: chunked over reference frames to compute reference_event_means
-        # ------------------------------------------------------------------
-        ref_sum = None
-        ref_count = 0
-        H = W = None
-
-        for batch in ref_source.iter_batches(chunk_size):
-            if batch.shape[0] == 0:
-                continue
-
+        batch_noburst = []
+        for idx in tqdm(range(reference.n_slices), desc="Removing random bursts from reference"):
             # batch is already [B, H, W] float32, regardless of npy/h5 backend
-            batch_noburst = remove_random_bursts(
-                batch,
+            batch_noburst.append(remove_random_bursts(
+                reference.slice(idx).count(normalize=False).numpy(),
                 threshold=10,
-            ).astype(np.float32, copy=False)
-
-            if ref_sum is None:
-                H, W = batch_noburst.shape[1:]
-                ref_sum = batch_noburst.sum(axis=0, dtype=np.float64)
-            else:
-                ref_sum += batch_noburst.sum(axis=0, dtype=np.float64)
-
-            ref_count += batch_noburst.shape[0]
-
-        if ref_count == 0:
-            raise ValueError("No reference frames left after filtering; check your config / time filter.")
+            ).astype(np.float32, copy=False))
 
         # mean over all (burst-filtered) reference frames, used for saliency
-        self.reference_event_means = (ref_sum / float(ref_count)).astype(np.float32)
+        self.reference_event_means = [event_frame_total.mean(axis=0) for event_frame_total in batch_noburst]
 
         # ------------------------------------------------------------------
         # Compute probabilities and sample sparse pixels from the full mean
         # ------------------------------------------------------------------
         if self.baseline_config['use_saliency']:
-            prob_to_draw_from = adjust_and_normalize_probabilities(self.reference_event_means)
+            prob_to_draw_from = adjust_and_normalize_probabilities(self.reference_event_means[0])
         else:
             prob_to_draw_from = None
 
-        # NOTE: dataset_config should match actual (W, H), but we trust the data shape we saw.
         im_width  = dataset_config["dataset"]["resolution"][0]
         im_height = dataset_config["dataset"]["resolution"][1]
-        if im_width != W or im_height != H:
-            # Trust the actual data, override silently
-            im_width, im_height = W, H
 
         random_pixels = np.array(
             get_random_pixels(
@@ -147,65 +92,19 @@ class sparse_event_baseline(EventBaseline):
         x_coords = random_pixels[:, 1]
         num_pixels = random_pixels.shape[0]
 
-        # ------------------------------------------------------------------
-        # Pass 2: re-load ref & query in chunks, build full *_noburst and sparse arrays
-        # ------------------------------------------------------------------
-        num_ref = len(ref_source)
-        num_qry = len(query_source)
+        # Remove random_pixels indices from reference data
+        self.sparse_reference_data = np.stack(batch_noburst)[:, 0, y_coords, x_coords]
 
-        # Do not allocate dense [N, H, W] arrays. That defeats the point of
-        # chunked loading and HDF5 storage.
-        self.reference_data_noburst = None
-        self.query_data_noburst = None
-
-        self.sparse_reference_data = np.empty((num_ref, num_pixels), dtype=np.float32)
-        self.sparse_query_data = np.empty((num_qry, num_pixels), dtype=np.float32)
-
-        # Fill reference arrays
-        ref_idx = 0
-
-        for batch in ref_source.iter_batches(chunk_size):
-            if batch.shape[0] == 0:
-                continue
-
-            batch_noburst = remove_random_bursts(
-                batch,
+        query_noburst = []
+        for idx in tqdm(range(query.n_slices), desc="Removing random bursts from query"):
+            query_noburst.append(remove_random_bursts(
+                query.slice(idx).count(normalize=False).numpy(),
                 threshold=10,
-            ).astype(np.float32, copy=False)
+            ).astype(np.float32, copy=False))
 
-            B = batch_noburst.shape[0]
-
-            self.sparse_reference_data[ref_idx:ref_idx + B] = (
-                batch_noburst[:, y_coords, x_coords]
-            )
-
-            ref_idx += B
-
-        if ref_idx != num_ref:
-            self.sparse_reference_data = self.sparse_reference_data[:ref_idx]
-
-        # Fill query arrays
-        qry_idx = 0
-
-        for batch in query_source.iter_batches(chunk_size):
-            if batch.shape[0] == 0:
-                continue
-
-            batch_noburst = remove_random_bursts(
-                batch,
-                threshold=10,
-            ).astype(np.float32, copy=False)
-
-            B = batch_noburst.shape[0]
-
-            self.sparse_query_data[qry_idx:qry_idx + B] = (
-                batch_noburst[:, y_coords, x_coords]
-            )
-
-            qry_idx += B
-
-        if qry_idx != num_qry:
-            self.sparse_query_data = self.sparse_query_data[:qry_idx]
+        
+        # remove indices from query_noburst
+        self.sparse_query_data = np.stack(query_noburst)[:, 0, y_coords, x_coords]
 
         # Create sparse_event dict for downstream distance computation
         self.frames_sets = {
