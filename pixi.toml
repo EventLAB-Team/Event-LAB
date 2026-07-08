@@ -1,6 +1,6 @@
 [workspace]
 name = "Event-LAB"
-version = "0.1.1"
+version = "1.1.0"
 description = "Event-based localization methods benchmarking toolkit"
 channels = ["conda-forge", "robostack-noetic"]
 platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
@@ -49,7 +49,7 @@ huggingface_hub = ">=1.5.0,<2"
 sphinx = ">=8.2.3,<9"
 sphinx-rtd-theme = ">=3.1.0,<4"
 myst-parser = ">=5.1.0,<6"
-eventcv = ">=1.0.0,<2"
+eventcv = ">=1.0.1,<2"
 
 [target.linux-64.dependencies]
 cuda-version = "12.*"

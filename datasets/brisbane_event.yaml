@@ -88,3 +88,4 @@ other:
     morning: 1588029265.73
     sunrise: 1588105232.91
     night: 1587975221.10
+  offset_time_scale: "s"

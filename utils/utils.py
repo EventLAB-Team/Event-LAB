@@ -28,3 +28,16 @@ def start(method, dataset):
     logger.info('================================================')
     logger.info('Version 1.1.0 - July 2026')
     logger.info('')
+
+def convert_offset(offsetref, offsetqry, scale):
+    # Check the offset timescale, convert to msec
+    if scale == "s":
+        return int(offsetref * 1000), int(offsetqry * 1000)
+    elif scale == "us":
+        return int(offsetref * 1000000), int(offsetqry * 1000000)
+    elif scale == "ns":
+        return int(offsetref * 1000000000), int(offsetqry * 1000000000)
+    else:
+        return int(offsetref), int(offsetqry)      
+
+         

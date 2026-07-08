@@ -5,7 +5,7 @@ from baselines.EventBaselineLab import EventBaseline
 from baselines.download_baseline import clone_repo
 from datetime import datetime, timezone
 import utils.functional as FUNC
-from datasets.dataloader import make_frame_source
+from utils.utils import convert_offset
 from tqdm import tqdm
 import eventcv as ecv
 
@@ -32,7 +32,7 @@ class sparse_event_baseline(EventBaseline):
         self.device = torch.device("cuda" if torch.cuda.is_available()
                             else "cpu")
 
-    def format_data(self, config, dataset_config, reference, query, timewindow):
+    def format_data(self, config, dataset_config, reference, query, timewindow, ref_offset=None, qry_offset=None):
         """
         Format the reference and query data for the baseline, using chunked
         loading so we never load all frames at once just to compute saliency.
@@ -51,17 +51,24 @@ class sparse_event_baseline(EventBaseline):
         self.ref_name = ref_info['sequence_name']
         self.query_name = query_info['sequence_name']
 
+        # Load data with or without an offset
+        if "other" in dataset_config and "offset" in dataset_config["other"]:
+            ref_offset, qry_offset = convert_offset(
+                dataset_config['other']['offset'][self.ref_name],
+                dataset_config['other']['offset'][self.query_name],
+                dataset_config['other']['offset_time_scale'])
+
         # Open reference and query into EventCV
-        reference = ecv.open(ref_info['hdf5_path'], dt_ms=timewindow)
-        query = ecv.open(query_info['hdf5_path'], repr="count", dt_ms=timewindow)
+        reference = ecv.open(ref_info['hdf5_path'], dt_ms=timewindow, offset=ref_offset)
+        query = ecv.open(query_info['hdf5_path'], dt_ms=timewindow, offset=qry_offset)
 
         batch_noburst = []
         for idx in tqdm(range(reference.n_slices), desc="Removing random bursts from reference"):
             # batch is already [B, H, W] float32, regardless of npy/h5 backend
             batch_noburst.append(remove_random_bursts(
-                reference.slice(idx).count(normalize=False).numpy(),
-                threshold=10,
-            ).astype(np.float32, copy=False))
+                reference.slice(idx).count().numpy(),
+                threshold=10)
+                )
 
         # mean over all (burst-filtered) reference frames, used for saliency
         self.reference_event_means = [event_frame_total.mean(axis=0) for event_frame_total in batch_noburst]
@@ -90,7 +97,6 @@ class sparse_event_baseline(EventBaseline):
         # y, x for indexing
         y_coords = random_pixels[:, 0]
         x_coords = random_pixels[:, 1]
-        num_pixels = random_pixels.shape[0]
 
         # Remove random_pixels indices from reference data
         self.sparse_reference_data = np.stack(batch_noburst)[:, 0, y_coords, x_coords]
@@ -98,11 +104,10 @@ class sparse_event_baseline(EventBaseline):
         query_noburst = []
         for idx in tqdm(range(query.n_slices), desc="Removing random bursts from query"):
             query_noburst.append(remove_random_bursts(
-                query.slice(idx).count(normalize=False).numpy(),
-                threshold=10,
-            ).astype(np.float32, copy=False))
+                query.slice(idx).count().numpy(),
+                threshold=10)
+            )
 
-        
         # remove indices from query_noburst
         self.sparse_query_data = np.stack(query_noburst)[:, 0, y_coords, x_coords]
 
