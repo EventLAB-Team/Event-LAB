@@ -59,25 +59,25 @@ class sparse_event_baseline(EventBaseline):
                 dataset_config['other']['offset_time_scale'])
 
         # Open reference and query into EventCV
-        reference = ecv.open(ref_info['hdf5_path'], dt_ms=timewindow, offset=ref_offset)
-        query = ecv.open(query_info['hdf5_path'], dt_ms=timewindow, offset=qry_offset)
+        reference = ecv.open(ref_info['hdf5_path'], dt_ms=timewindow, offset=ref_offset, hot_pixel_filter=True)
+        query = ecv.open(query_info['hdf5_path'], dt_ms=timewindow, offset=qry_offset, hot_pixel_filter=True)
 
         batch_noburst = []
         for idx in tqdm(range(reference.n_slices), desc="Removing random bursts from reference"):
             # batch is already [B, H, W] float32, regardless of npy/h5 backend
             batch_noburst.append(remove_random_bursts(
                 reference.slice(idx).count().numpy(),
-                threshold=10)
+                threshold=10).astype(np.float32)
                 )
 
         # mean over all (burst-filtered) reference frames, used for saliency
-        self.reference_event_means = [event_frame_total.mean(axis=0) for event_frame_total in batch_noburst]
+        batch_mean = np.mean(np.stack(batch_noburst), axis=0).astype(np.float64)
 
         # ------------------------------------------------------------------
         # Compute probabilities and sample sparse pixels from the full mean
         # ------------------------------------------------------------------
         if self.baseline_config['use_saliency']:
-            prob_to_draw_from = adjust_and_normalize_probabilities(self.reference_event_means[0])
+            prob_to_draw_from = adjust_and_normalize_probabilities(batch_mean[0])
         else:
             prob_to_draw_from = None
 
@@ -94,6 +94,7 @@ class sparse_event_baseline(EventBaseline):
             )
         )
 
+
         # y, x for indexing
         y_coords = random_pixels[:, 0]
         x_coords = random_pixels[:, 1]
@@ -105,7 +106,7 @@ class sparse_event_baseline(EventBaseline):
         for idx in tqdm(range(query.n_slices), desc="Removing random bursts from query"):
             query_noburst.append(remove_random_bursts(
                 query.slice(idx).count().numpy(),
-                threshold=10)
+                threshold=10).astype(np.float32)
             )
 
         # remove indices from query_noburst
