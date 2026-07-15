@@ -1,5 +1,6 @@
 import os
-import glob
+# Let unsupported ops fall back to CPU when running on Apple MPS.
+os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
 import time
 import argparse
 import numpy as np
@@ -8,11 +9,35 @@ import torch
 import matplotlib.pyplot as plt
 import sys
 from pathlib import Path
+from loguru import logger
+from tqdm import tqdm
 sys.path.append('./baselines/EventVLAD')
 from networks import EventDenoiser  # add other models in build_model if needed
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
-from datasets.dataloader import make_frame_source
+import eventcv as ecv
+
+
+# ----------------- Device -----------------
+def pick_device(use_gpu: bool, device_override: str = None) -> torch.device:
+    """Select a compute device: explicit override, else cuda -> mps -> cpu when use_gpu."""
+    if device_override:
+        return torch.device(device_override)
+    if not use_gpu:
+        return torch.device("cpu")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if getattr(torch.backends, "mps", None) is not None and torch.backends.mps.is_available():
+        return torch.device("mps")
+    return torch.device("cpu")
+
+
+def sync_device(device: torch.device):
+    """Block until queued device work finishes (for accurate timing)."""
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elif device.type == "mps":
+        torch.mps.synchronize()
 
 # ----------------- Model factory -----------------
 def build_model(model_type: str, dep_u: int, dep_s: int, slope: float) -> torch.nn.Module:
@@ -28,22 +53,59 @@ def clean_state_dict(sd):
     return sd
 
 
-def load_checkpoint_into_model(model, ckpt_path, use_gpu):
+def load_checkpoint_into_model(model, ckpt_path, device):
     ckpt = torch.load(ckpt_path, map_location="cpu")
     sd = ckpt["state_dict"] if isinstance(ckpt, dict) and "state_dict" in ckpt else ckpt
     sd = clean_state_dict(sd)
     missing, unexpected = model.load_state_dict(sd, strict=False)
     if missing:
-        print(f"[warn] Missing keys: {missing[:8]}{' ...' if len(missing)>8 else ''}")
+        logger.warning(f"Missing keys: {missing[:8]}{' ...' if len(missing)>8 else ''}")
     if unexpected:
-        print(f"[warn] Unexpected keys: {unexpected[:8]}{' ...' if len(unexpected)>8 else ''}")
-    if use_gpu and torch.cuda.is_available():
+        logger.warning(f"Unexpected keys: {unexpected[:8]}{' ...' if len(unexpected)>8 else ''}")
+    # DataParallel only makes sense for (multi-)CUDA; MPS/CPU use a plain module.
+    if device.type == "cuda":
         model = torch.nn.DataParallel(model).cuda()
+    else:
+        model = model.to(device)
     model.eval()
     return model
 
 
-# ----------------- I/O utils -----------------
+# ----------------- EventCV stream -----------------
+def open_event_reader(hdf5_path, dt_ms, offset, repr_name, hot_pixel_filter):
+    """Open an EventCV reader with fixed-duration framing (dt_ms) and a chosen representation."""
+    kwargs = {"dt_ms": dt_ms, "repr": repr_name, "hot_pixel_filter": hot_pixel_filter}
+    if offset is not None:
+        kwargs["offset"] = offset
+    return ecv.open(hdf5_path, **kwargs)
+
+
+def _to_numpy(x):
+    """Coerce an EventCV/torch batch result into a NumPy array."""
+    if torch.is_tensor(x):
+        return x.detach().cpu().numpy()
+    if hasattr(x, "numpy"):
+        return np.asarray(x.numpy())
+    return np.asarray(x)
+
+
+def iter_reader_batches(reader, batch_size):
+    """
+    Iterate over the reader's fixed frames in dense batches using reader.batch().
+
+    Yields
+    ------
+    np.ndarray of shape [B, C, H, W]
+        A rendered batch of consecutive frame slices.
+    """
+    n = int(reader.n_slices)
+    for start in range(0, n, batch_size):
+        end = min(start + batch_size, n)
+        batch = reader.batch(list(range(start, end)))  # [B, C, H, W]
+        yield _to_numpy(batch)
+
+
+# ----------------- Frame utils -----------------
 def make_divisible(img, mult):
     if mult <= 1:
         return img
@@ -52,71 +114,41 @@ def make_divisible(img, mult):
                : W - (W % mult) if W % mult else W]
 
 
-def to_float01(arr: np.ndarray, percentile: float = 99.0) -> np.ndarray:
-    """Normalize to [0,1] sensibly (handles ints, large floats, and already-normalized floats)."""
-    arr = arr.astype(np.float32, copy=False)
-    if arr.size == 0:
-        return arr
-    maxv = float(arr.max())
-    # already normalized?
-    if maxv <= 1.0 + 1e-6 and arr.min() >= -1e-6:
-        return np.clip(arr, 0.0, 1.0)
-    # 8-bit style?
-    if np.issubdtype(arr.dtype, np.integer) and maxv <= 255:
-        return np.clip(arr / 255.0, 0.0, 1.0)
-    vmax = float(np.percentile(arr, percentile))
-    if not np.isfinite(vmax) or vmax <= 0:
-        vmax = max(maxv, 1.0)
-    return np.clip(arr / vmax, 0.0, 1.0)
-
-
-def load_gray_float_from_image(path: str) -> np.ndarray:
-    """Load a standard image file as grayscale float32 in [0,1]."""
-    im = cv2.imread(path, cv2.IMREAD_GRAYSCALE)
-    if im is None:
-        raise FileNotFoundError(f"Failed to read image: {path}")
-    return (im.astype(np.float32) / 255.0)
-
-
-def load_gray_float_from_npy(path: str, npy_mode: str, percentile: float) -> np.ndarray:
-    """Load .npy or .npz. Accepts (H,W) or (H,W,2) [pos,neg]. Returns float32 in [0,1]."""
-    if path.lower().endswith(".npz"):
-        data = np.load(path)
-        if "pos" in data and "neg" in data:
-            arr = np.stack([data["pos"], data["neg"]], axis=-1)
-        else:
-            # fall back: first array in file
-            key = list(data.keys())[0]
-            arr = data[key]
-    else:
-        arr = np.load(path)
-
-    if arr.ndim == 2:
-        gray = arr
-    elif arr.ndim == 3 and arr.shape[2] == 2:
-        if npy_mode == "sum":
-            gray = arr[..., 0] + arr[..., 1]
-        elif npy_mode == "pos":
-            gray = arr[..., 0]
-        elif npy_mode == "neg":
-            gray = arr[..., 1]
-        elif npy_mode == "diff":
-            # map to non-negative for denoiser input
-            diff = arr[..., 0].astype(np.float32) - arr[..., 1].astype(np.float32)
-            gray = np.abs(diff)
-        else:
+def collapse_frame(frame: np.ndarray, npy_mode: str) -> np.ndarray:
+    """Collapse a single [C,H,W] (or [H,W]) rendered slice to a 2-D grayscale frame."""
+    frame = np.asarray(frame)
+    if frame.ndim == 2:
+        return frame
+    if frame.ndim == 3:
+        c = frame.shape[0]
+        if c == 1:
+            return frame[0]
+        if c == 2:
+            if npy_mode == "sum":
+                return frame[0] + frame[1]
+            if npy_mode == "pos":
+                return frame[0]
+            if npy_mode == "neg":
+                return frame[1]
+            if npy_mode == "diff":
+                return frame[0] - frame[1]
             raise ValueError(f"Unsupported npy_mode: {npy_mode}")
-    else:
-        # Unknown shape: take mean across channels
-        gray = arr.mean(axis=-1) if arr.ndim == 3 else arr.squeeze()
-
-    return to_float01(gray, percentile=percentile)
+        # Unknown channel count: average across channels.
+        return frame.mean(axis=0)
+    raise ValueError(f"Unsupported frame shape from reader: {frame.shape}")
 
 
-def load_gray_float_any(path: str, npy_mode: str, percentile: float) -> np.ndarray:
-    if path.lower().endswith((".npy", ".npz")):
-        return load_gray_float_from_npy(path, npy_mode=npy_mode, percentile=percentile)
-    return load_gray_float_from_image(path)
+def normalize_frame(frame: np.ndarray, percentile: float) -> np.ndarray:
+    """Percentile-normalize a grayscale frame to [0,1] (matches the old NumPy behaviour)."""
+    frame = frame.astype(np.float32, copy=False)
+    if frame.size == 0:
+        return frame
+    vmax = float(np.percentile(np.abs(frame), percentile))
+    if not np.isfinite(vmax) or vmax <= 0:
+        vmax = float(np.max(np.abs(frame))) if frame.size else 1.0
+    if not np.isfinite(vmax) or vmax <= 0:
+        vmax = 1.0
+    return np.clip(frame / vmax, 0.0, 1.0).astype(np.float32, copy=False)
 
 
 def prep_input_triplet(i0: np.ndarray, i1: np.ndarray, i2: np.ndarray,
@@ -160,8 +192,14 @@ def tensor_to_uint8(img_t):
 
 # ----------------- Main -----------------
 def main():
-    ap = argparse.ArgumentParser(description="Denoise triplets from an event frame store.")
-    ap.add_argument("--input_dir", help="Folder containing frames.h5 or legacy frame_*.npy files")
+    ap = argparse.ArgumentParser(description="Denoise triplets streamed from an EventCV recording.")
+    ap.add_argument("--hdf5_path", required=True, help="Path to the formatted event HDF5 recording")
+    ap.add_argument("--dt_ms", type=float, required=True, help="Fixed frame duration (timewindow) in ms")
+    ap.add_argument("--offset", type=float, default=None, help="Framing origin offset in ms")
+    ap.add_argument("--repr", default="count", help="EventCV representation to render (e.g. count)")
+    ap.add_argument("--hot_pixel_filter", action=argparse.BooleanOptionalAction, default=True,
+                    help="Apply EventCV hot-pixel filtering")
+    ap.add_argument("--batch_size", type=int, default=512, help="Number of slices rendered per reader.batch() call")
     ap.add_argument("--model_path", required=True, help="Path to model checkpoint")
     ap.add_argument("--model_type", default="event_denoiser", help="Model type (e.g., event_denoiser)")
     ap.add_argument("--dep_u", type=int, default=5, help="Model dep_U (divisibility power)")
@@ -169,7 +207,9 @@ def main():
     ap.add_argument("--slope", type=float, default=0.2, help="Model slope param")
     ap.add_argument("--size", type=int, default=256, help="Resize to NxN (0 to disable)")
     ap.add_argument("--rotate180", action="store_true", help="Rotate inputs 180 degrees")
-    ap.add_argument("--use_gpu", action="store_true", help="Use GPU if available")
+    ap.add_argument("--use_gpu", action="store_true", help="Use an accelerator if available (cuda, then Apple mps)")
+    ap.add_argument("--device", default=None,
+                    help="Explicit device override (e.g. cuda, mps, cpu); takes precedence over --use_gpu")
     ap.add_argument("--stride", type=int, default=1, help="Sliding window stride over triplets")
     ap.add_argument("--show", type=int, default=3, help="Show first N results (0 = headless)")
     ap.add_argument("--save_dir", default=None, help="Optional: save denoised PNGs here")
@@ -179,7 +219,7 @@ def main():
         "--npy_mode",
         default="sum",
         choices=["sum", "pos", "neg", "diff"],
-        help="How to convert polarity frames to grayscale if needed",
+        help="How to collapse a 2-channel polarity representation to grayscale",
     )
     ap.add_argument(
         "--npy_percentile",
@@ -190,75 +230,46 @@ def main():
 
     args = ap.parse_args()
 
-    # New storage-aware frame source.
-    frame_source = make_frame_source(args.input_dir)
-
-    if len(frame_source) < 3:
-        raise RuntimeError(
-            f"Need at least 3 inputs in {args.input_dir}; found {len(frame_source)}"
-        )
+    # Select the compute device (cuda -> mps -> cpu, or an explicit override).
+    device = pick_device(args.use_gpu, args.device)
 
     # Build + load model
-    print("Building model:", args.model_type)
+    logger.info(f"Building model: {args.model_type}")
     net = build_model(args.model_type, dep_u=args.dep_u, dep_s=args.dep_s, slope=args.slope)
-    net = load_checkpoint_into_model(net, args.model_path, use_gpu=args.use_gpu)
+    net = load_checkpoint_into_model(net, args.model_path, device=device)
 
     if args.save_dir:
         os.makedirs(args.save_dir, exist_ok=True)
 
+    # Open the EventCV stream directly instead of loading frames from disk.
+    logger.info(f"Opening EventCV stream: {args.hdf5_path} (dt_ms={args.dt_ms}, offset={args.offset})")
+    reader = open_event_reader(
+        args.hdf5_path,
+        dt_ms=args.dt_ms,
+        offset=args.offset,
+        repr_name=args.repr,
+        hot_pixel_filter=args.hot_pixel_filter,
+    )
+    n_slices = int(reader.n_slices)
+
     shown = 0
     timings = []
 
-    print("Begin testing on", "GPU" if (args.use_gpu and torch.cuda.is_available()) else "CPU")
+    logger.info(f"Begin denoising {n_slices} slices on {device.type}")
 
-    batch_size = 512
     window = []
     start_idx = 0
     processed = 0
 
-    for batch in frame_source.iter_batches(batch_size):
-        for frame in batch:
-            frame = np.asarray(frame)
-
-            # If loader has not already collapsed channels, handle it here.
-            if frame.ndim == 3:
-                if frame.shape[-1] == 2:
-                    if args.npy_mode == "sum":
-                        frame = frame[..., 0] + frame[..., 1]
-                    elif args.npy_mode == "pos":
-                        frame = frame[..., 0]
-                    elif args.npy_mode == "neg":
-                        frame = frame[..., 1]
-                    elif args.npy_mode == "diff":
-                        frame = frame[..., 0] - frame[..., 1]
-                elif frame.shape[0] == 2:
-                    if args.npy_mode == "sum":
-                        frame = frame[0] + frame[1]
-                    elif args.npy_mode == "pos":
-                        frame = frame[0]
-                    elif args.npy_mode == "neg":
-                        frame = frame[1]
-                    elif args.npy_mode == "diff":
-                        frame = frame[0] - frame[1]
-                elif frame.shape[-1] == 1:
-                    frame = frame[..., 0]
-                elif frame.shape[0] == 1:
-                    frame = frame[0]
-                else:
-                    raise ValueError(f"Unsupported frame shape: {frame.shape}")
-
-            frame = frame.astype(np.float32, copy=False)
-
-            # Match old NumPy normalization behaviour.
-            vmax = float(np.percentile(np.abs(frame), args.npy_percentile))
-            if not np.isfinite(vmax) or vmax <= 0:
-                vmax = float(np.max(np.abs(frame))) if frame.size else 1.0
-            if not np.isfinite(vmax) or vmax <= 0:
-                vmax = 1.0
-
-            frame = np.clip(frame / vmax, 0.0, 1.0).astype(np.float32, copy=False)
+    pbar = tqdm(total=n_slices, desc="Denoising", unit="slice")
+    for batch in iter_reader_batches(reader, args.batch_size):
+        # batch: [B, C, H, W]
+        for i in range(batch.shape[0]):
+            frame = collapse_frame(batch[i], args.npy_mode)
+            frame = normalize_frame(frame, args.npy_percentile)
 
             window.append(frame)
+            pbar.update(1)
 
             if len(window) < 3:
                 continue
@@ -275,18 +286,15 @@ def main():
                     rotate180=args.rotate180,
                 )
 
-                if args.use_gpu and torch.cuda.is_available():
-                    x = x.cuda(non_blocking=True)
+                x = x.to(device, non_blocking=True)
 
                 with torch.no_grad():
-                    if args.use_gpu and torch.cuda.is_available():
-                        torch.cuda.synchronize()
+                    sync_device(device)
 
                     t0 = time.perf_counter()
                     y = net(x)
 
-                    if args.use_gpu and torch.cuda.is_available():
-                        torch.cuda.synchronize()
+                    sync_device(device)
 
                     t1 = time.perf_counter()
                     timings.append(t1 - t0)
@@ -322,16 +330,17 @@ def main():
 
             window.pop(0)
             start_idx += 1
+    pbar.close()
 
     if processed == 0:
         raise RuntimeError(
-            f"No triplets processed from {args.input_dir}. "
-            f"Frame count={len(frame_source)}, stride={args.stride}"
+            f"No triplets processed from {args.hdf5_path}. "
+            f"Frame count={n_slices}, stride={args.stride}"
         )
 
     if timings:
         avg = sum(timings) / len(timings)
-        print(f"Processed {len(timings)} triplets. Avg time: {avg:.4f}s (per inference)")
+        logger.info(f"Processed {len(timings)} triplets. Avg time: {avg:.4f}s (per inference)")
 
 if __name__ == "__main__":
     main()

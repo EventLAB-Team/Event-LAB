@@ -12,6 +12,8 @@ import utils.functional as FUNC
 import shutil 
 from datasets.dataloader import make_frame_source
 from loguru import logger
+from utils.utils import convert_offset
+import eventcv as ecv
 
 class eventvlad_baseline(EventBaseline):
     def __init__(self, config, dataset_config, reference, query):
@@ -86,53 +88,26 @@ class eventvlad_baseline(EventBaseline):
 
         ref_name = ref_info["sequence_name"]
         query_name = query_info["sequence_name"]
+        self.ref_name = ref_name
+        self.query_name = query_name
 
-        # Find the frame-store directories matching sequence name + timewindow
-        self.ref_key = [
-            d for d in ref_info["file_path"]
-            if ref_name in d and str(timewindow) in d
-        ]
-        self.query_key = [
-            d for d in query_info["file_path"]
-            if query_name in d and str(timewindow) in d
-        ]
+        # Load data with or without an offset
+        if "other" in dataset_config and "offset" in dataset_config["other"]:
+            ref_offset, qry_offset = convert_offset(
+                dataset_config['other']['offset'][ref_name],
+                dataset_config['other']['offset'][query_name],
+                dataset_config['other']['offset_time_scale'])
+        else:
+            ref_offset, qry_offset = None, None
 
-        if not self.ref_key:
-            raise FileNotFoundError(
-                f"No reference frame store found for sequence={ref_name}, timewindow={timewindow}"
-            )
-
-        if not self.query_key:
-            raise FileNotFoundError(
-                f"No query frame store found for sequence={query_name}, timewindow={timewindow}"
-            )
-
-        self.ref_name = self.ref_key[0]
-        self.query_name = self.query_key[0]
-
-        self.ref_directory = ref_info["file_path"][self.ref_name]
-        self.query_directory = query_info["file_path"][self.query_name]
-
-        # Build frame sources using the new generalized loader.
-        # This replaces all manual frame_*.npy listing/loading logic.
-        min_gap_sec = float(config.get("filter_places_sec", 60))
-
-        self.ref_frame_source = make_frame_source(
-            self.ref_directory,
-            min_gap_sec=min_gap_sec,
-        )
-
-        self.query_frame_source = make_frame_source(
-            self.query_directory,
-            min_gap_sec=min_gap_sec,
-        )
-
-        # Preserve kept/dropped indices if the loader exposes them.
-        self.ref_kept_idx = getattr(self.ref_frame_source, "kept_idx", None)
-        self.ref_dropped_idx = getattr(self.ref_frame_source, "dropped_idx", None)
-
-        self.query_kept_idx = getattr(self.query_frame_source, "kept_idx", None)
-        self.query_dropped_idx = getattr(self.query_frame_source, "dropped_idx", None)
+        # Stream parameters passed to the denoiser subprocess, which opens the
+        # EventCV stream itself (a live reader object cannot cross the process
+        # boundary as a CLI argument).
+        self.timewindow = timewindow
+        self.ref_offset = ref_offset
+        self.qry_offset = qry_offset
+        self.ref_hdf5_path = ref_info['hdf5_path']
+        self.query_hdf5_path = query_info['hdf5_path']
 
         # Denoised output directories used by build_execute/run.
         self.ref_dir_out = os.path.join(
@@ -166,13 +141,15 @@ class eventvlad_baseline(EventBaseline):
         """
         # Denoise the images and output them to the temporary directory
         # Build the command as a single string
-        if not os.path.exists(self.ref_dir_out):
+        if not os.path.exists(self.ref_dir_out) or len(os.listdir(self.ref_dir_out)) == 0:
             os.makedirs(self.ref_dir_out, exist_ok=True)
             ref_convert = (
                 # Include command line arugments specific to the baseline
                 f'python utils/eventvlad_denoiser.py '
-                f'--input_dir {self.ref_directory} '
-                f'--model_path baselines/EventVLAD/denoiser_brisbane '
+                f'--hdf5_path {self.ref_hdf5_path} '
+                f'--dt_ms {self.timewindow} '
+                + (f'--offset {self.ref_offset} ' if self.ref_offset is not None else '')
+                + f'--model_path baselines/EventVLAD/denoiser_brisbane '
                 f'--save_dir {self.ref_dir_out} '
                 f'--use_gpu '
                 f'--show {0}'
@@ -185,13 +162,15 @@ class eventvlad_baseline(EventBaseline):
                 logger.error("STDERR:", result.stderr)
             if result.returncode != 0:
                 raise RuntimeError(f"Baseline evaluation failed with return code {result.returncode}")
-        if not os.path.exists(self.query_dir_out):
+        if not os.path.exists(self.query_dir_out) or len(os.listdir(self.query_dir_out)) == 0:
             os.makedirs(self.query_dir_out, exist_ok=True)
             query_convert = (
                 # Include command line arugments specific to the baseline
                 f"python utils/eventvlad_denoiser.py "
-                f"--input_dir {self.query_directory} "
-                f"--model_path baselines/EventVLAD/denoiser_brisbane "
+                f"--hdf5_path {self.query_hdf5_path} "
+                f"--dt_ms {self.timewindow} "
+                + (f"--offset {self.qry_offset} " if self.qry_offset is not None else "")
+                + f"--model_path baselines/EventVLAD/denoiser_brisbane "
                 f"--save_dir {self.query_dir_out} "
                 f"--use_gpu "
                 f"--show {0}"
@@ -208,15 +187,24 @@ class eventvlad_baseline(EventBaseline):
         """
         Run the baseline.
         """
-        import torch
-        from baselines.eventvlad_featureextraction import build_eventvlad_model_from_tar, extract_eventvlad_features
+        import multiprocessing as mp
+        from baselines.eventvlad_featureextraction import build_eventvlad_model_from_tar, extract_eventvlad_features, _device
+        # cuda -> mps -> cpu (Apple GPU support for the NetVLAD forward pass)
+        device = _device()
+        logger.info(f"Extracting EventVLAD features on {device.type}")
         model = build_eventvlad_model_from_tar(
             weights_path="./baselines/EventVLAD/vgg16_eventvlad.tar",
             num_clusters=64,
-            device=torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            device=device,
         )
-        ref_feats = extract_eventvlad_features(model, self.ref_dir_out, batch_size=8, num_workers=4)
-        query_feats = extract_eventvlad_features(model, self.query_dir_out, batch_size=8, num_workers=4)
+        # Only use DataLoader worker processes under 'fork' (Linux). Under 'spawn'
+        # (macOS/Windows) each worker re-imports eventlab_run.py, and the
+        # './baselines/EventVLAD' entry on sys.path shadows the project 'utils'
+        # package (baselines/EventVLAD/utils.py), crashing the workers. Loading
+        # inline (num_workers=0) avoids the re-import entirely.
+        num_workers = 4 if mp.get_start_method(allow_none=True) == "fork" else 0
+        ref_feats = extract_eventvlad_features(model, self.ref_dir_out, batch_size=8, num_workers=num_workers, device=device)
+        query_feats = extract_eventvlad_features(model, self.query_dir_out, batch_size=8, num_workers=num_workers, device=device)
         D = (1 - (query_feats @ ref_feats.T)).T
         # Save the distance matrix
         np.save(os.path.join(self.output_dir, "distance_matrix.npy"), D)

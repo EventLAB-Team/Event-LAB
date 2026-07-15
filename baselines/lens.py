@@ -4,11 +4,12 @@ import numpy as np
 from PIL import Image
 from tqdm import tqdm
 from pathlib import Path
+from loguru import logger
 from baselines.EventBaselineLab import EventBaseline
 from baselines.download_baseline import clone_repo
 from datetime import datetime, timezone
-from datasets.dataloader import make_frame_source
-import utils.functional as FUNC
+from utils.utils import convert_offset
+import eventcv as ecv
 
 class LENS_baseline(EventBaseline):
     def __init__(self):
@@ -30,42 +31,122 @@ class LENS_baseline(EventBaseline):
         os.makedirs(self.outdir, exist_ok=True)
         self.matrix_type = 'similarity' # options are 'similarity' or 'distance'
 
+    @staticmethod
+    def _open_reader(hdf5_path, timewindow, offset):
+        """Open an EventCV count-frame stream with hot-pixel filtering."""
+        kwargs = {"dt_ms": timewindow, "repr": "count", "hot_pixel_filter": True}
+        if offset is not None:
+            kwargs["offset"] = offset
+        return ecv.open(hdf5_path, **kwargs)
+
+    @staticmethod
+    def _kept_place_indices(n_slices, timewindow_ms, min_gap_sec):
+        """
+        Greedy temporal thinning over fixed-duration frames.
+
+        EventCV renders uniform dt_ms frames, so frame i sits at a deterministic
+        time i * dt_sec (the absolute offset is constant and cancels in the
+        pairwise gap). This reproduces the greedy "keep frames >= min_gap_sec
+        apart" filter that used to live in make_frame_source, without needing any
+        per-frame tick metadata.
+        """
+        if not min_gap_sec or min_gap_sec <= 0:
+            return list(range(n_slices))
+        dt_sec = float(timewindow_ms) / 1000.0
+        if dt_sec <= 0:
+            return list(range(n_slices))
+
+        kept = []
+        last_kept_t = None
+        for i in range(n_slices):
+            t = i * dt_sec
+            if last_kept_t is None or (t - last_kept_t) >= min_gap_sec:
+                kept.append(i)
+                last_kept_t = t
+        return kept
+
+    @staticmethod
+    def _frame_to_uint8(frame):
+        """Collapse a single [C,H,W] (or [H,W]) count frame to a uint8 image."""
+        frame = np.asarray(frame)
+        if frame.ndim == 3:
+            # EventCV yields channel-first frames; sum polarity/count channels.
+            frame = frame.sum(axis=0)
+        return np.clip(frame, 0, 255).astype(np.uint8)
+
+    def _write_lens_sequence(self, reader, timewindow, min_gap_sec, out_dir, csv_path, desc,
+                             batch_size=64):
+        """
+        Stream fixed-duration frames from an EventCV reader, thin them to distinct
+        places, and materialize the PNGs + CSV manifest the external LENS
+        dataloader expects. Returns the number of places written.
+        """
+        n_slices = int(reader.n_slices)
+        kept = self._kept_place_indices(n_slices, timewindow, min_gap_sec)
+        if len(kept) <= 0:
+            raise ValueError(
+                f"No frames available for LENS input (n_slices={n_slices}, "
+                f"min_gap_sec={min_gap_sec})."
+            )
+
+        places = 0
+        with open(csv_path, 'w', newline='') as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(['Image_name', 'index', 'gps_coordinate'])
+
+            with tqdm(total=len(kept), desc=desc) as pbar:
+                for start in range(0, len(kept), batch_size):
+                    idx_chunk = kept[start:start + batch_size]
+                    batch = reader.batch(idx_chunk)  # [B, C, H, W]
+                    batch = batch.numpy() if hasattr(batch, "numpy") else np.asarray(batch)
+                    for b in range(batch.shape[0]):
+                        filename = f"{places:06d}.png"
+                        Image.fromarray(self._frame_to_uint8(batch[b])).save(
+                            os.path.join(out_dir, filename)
+                        )
+                        writer.writerow([filename, places, 0])
+                        places += 1
+                        pbar.update(1)
+
+        return places
+
     def format_data(self, config, dataset_config, reference, query, timewindow):
         """
         Format the reference and query data for LENS baseline.
 
-        LENS expects image folders plus CSV manifests. Event-LAB now stores
-        frames in frames.h5, so this wrapper streams frames from either the new
-        HDF5 store or legacy frame_*.npy files and materializes only the PNGs
-        needed by the external LENS dataloader.
+        LENS expects image folders plus CSV manifests. Frames are now streamed
+        directly from the EventCV recording (fixed dt_ms count frames, hot-pixel
+        filtered) and thinned to distinct places, materializing only the PNGs the
+        external LENS dataloader needs.
         """
         self.config = config
         # Get experimental details
         ref_info = reference.get_dataset_info()
         query_info = query.get_dataset_info()
-        self.ref_name = ref_info['sequence_name']
-        self.query_name = query_info['sequence_name']
-        # from ref_info['file_path'] dict, find the directory that matches ref/query name and timewindow
-        self.ref_key = [d for d in ref_info['file_path'] if self.ref_name in d and str(timewindow) in d]
-        self.query_key = [d for d in query_info['file_path'] if self.query_name in d and str(timewindow) in d]
-        self.ref_directory = ref_info['file_path'][self.ref_key[0]]
-        self.query_directory = query_info['file_path'][self.query_key[0]]
+        ref_seq = ref_info['sequence_name']
+        query_seq = query_info['sequence_name']
+        # Resolve the timewindow-tagged sequence names LENS uses for its temp
+        # folders, CSV manifests, model filenames and output paths.
+        self.ref_key = [d for d in ref_info['file_path'] if ref_seq in d and str(timewindow) in d]
+        self.query_key = [d for d in query_info['file_path'] if query_seq in d and str(timewindow) in d]
         self.ref_name = self.ref_key[0]
         self.query_name = self.query_key[0]
 
+        # Offsets (consistent with the other EventCV baselines).
+        if "other" in dataset_config and "offset" in dataset_config["other"]:
+            ref_offset, qry_offset = convert_offset(
+                dataset_config['other']['offset'][ref_seq],
+                dataset_config['other']['offset'][query_seq],
+                dataset_config['other']['offset_time_scale'])
+        else:
+            ref_offset, qry_offset = None, None
+
         min_gap_sec = float(config.get("filter_places_sec", 60))
 
-        ref_source = make_frame_source(
-            self.ref_directory,
-            min_gap_sec=min_gap_sec,
-            legacy_time_filter_fn=FUNC._apply_time_filter_to_files,
-        )
-        query_source = make_frame_source(
-            self.query_directory,
-            min_gap_sec=min_gap_sec,
-            legacy_time_filter_fn=FUNC._apply_time_filter_to_files,
-        )
-        
+        # Open EventCV streams directly instead of loading frames from disk.
+        ref_reader = self._open_reader(ref_info['hdf5_path'], timewindow, ref_offset)
+        query_reader = self._open_reader(query_info['hdf5_path'], timewindow, qry_offset)
+
         # Create temporary directory
         self.temp_dir = tempfile.mkdtemp(prefix="lens_data_")
         self.ref_dir = os.path.join(self.temp_dir, self.ref_name)
@@ -73,43 +154,21 @@ class LENS_baseline(EventBaseline):
         os.makedirs(self.ref_dir, exist_ok=True)
         os.makedirs(self.query_dir, exist_ok=True)
 
-        def frame_to_uint8(frame):
-            frame = np.asarray(frame)
-            if frame.ndim == 3:
-                frame = np.sum(frame, axis=-1)
-            return np.clip(frame, 0, 255).astype(np.uint8)
-
-        def write_lens_sequence(frame_source, out_dir, csv_path, desc):
-            if len(frame_source) <= 0:
-                raise ValueError(f"No frames available for LENS input: {frame_source.path}")
-
-            places = 0
-            with open(csv_path, 'w', newline='') as csv_file:
-                writer = csv.writer(csv_file)
-                writer.writerow(['Image_name', 'index', 'gps_coordinate'])
-
-                with tqdm(total=len(frame_source), desc=desc) as pbar:
-                    for batch in frame_source.iter_batches(64):
-                        for frame in batch:
-                            filename = f"{places:06d}.png"
-                            Image.fromarray(frame_to_uint8(frame)).save(os.path.join(out_dir, filename))
-                            writer.writerow([filename, places, 0])
-                            places += 1
-                            pbar.update(1)
-
-            return places
-        
         ref_csv_path = os.path.join(self.temp_dir, f"{self.ref_name}.csv")
         query_csv_path = os.path.join(self.temp_dir, f"{self.query_name}.csv")
 
-        self.reference_places = write_lens_sequence(
-            ref_source,
+        self.reference_places = self._write_lens_sequence(
+            ref_reader,
+            timewindow,
+            min_gap_sec,
             self.ref_dir,
             ref_csv_path,
             "Formatting reference data to LENS requirements",
         )
-        self.query_places = write_lens_sequence(
-            query_source,
+        self.query_places = self._write_lens_sequence(
+            query_reader,
+            timewindow,
+            min_gap_sec,
             self.query_dir,
             query_csv_path,
             "Formatting query data to LENS requirements",
@@ -177,21 +236,21 @@ class LENS_baseline(EventBaseline):
         """
         Run the LENS baseline.
         """
-        print(f"Running LENS baseline with command: {' '.join(self.train_cmd)}")
-        
+        logger.info(f"Running LENS baseline with command: {' '.join(self.train_cmd)}")
+
         # Run from the current directory, not the repo directory
         # since we're providing full paths in the command
         # Check if the model already exists, skip training if it does
-        model_path = os.path.join(self.repo_path, 
-                                  'lens', 'models', 
+        model_path = os.path.join(self.repo_path,
+                                  'lens', 'models',
         f"{self.ref_name}_LENS_IN{self.lens_config['dims'][0] * self.lens_config['dims'][1]}_FN{self.lens_config['dims'][0] * self.lens_config['dims'][1]*self.lens_config['feature_multiplier']}_DB{self.reference_places}.pth")
 
         if not os.path.exists(model_path):
             result = subprocess.run(self.train_cmd, text=True)
             if result.returncode != 0:
                 raise RuntimeError(f"LENS baseline failed with return code {result.returncode}")
-        
-            print(f"Running LENS baseline with command: {' '.join(self.eval_cmd)}")
+
+            logger.info(f"Running LENS baseline with command: {' '.join(self.eval_cmd)}")
         # Run evaluation command
         result = subprocess.run(self.eval_cmd, text=True)
         if result.returncode != 0:
@@ -209,7 +268,7 @@ class LENS_baseline(EventBaseline):
         all_arrays = [np.load(f) for f in all_files]
         GThard = np.load(GT)
         if not all_arrays:
-            print("No .npy result files found in", self.output_dir)
+            logger.warning(f"No .npy result files found in {self.output_dir}")
             return
 
         timestamp = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()

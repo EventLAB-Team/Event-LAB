@@ -303,6 +303,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/linux-64/onemkl-license-2025.3.1-hf2ce2f3_12.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/onnx-1.21.0-py312he0a7d46_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/opencl-headers-2025.06.13-hecca717_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/linux-64/opencv-4.13.0-qt6_py312hf9dabfb_606.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/openexr-3.4.11-h9f1635d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/openh264-2.6.0-hc22cd8d_0.conda
       - conda: https://conda.anaconda.org/conda-forge/linux-64/openjpeg-2.5.4-h55fea9a_0.conda
@@ -899,6 +900,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-64/numpy-1.26.4-py312he3a82b2_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/onnx-1.21.0-py312h1043dab_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/openblas-0.3.33-openmp_h30af337_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/osx-64/opencv-4.13.0-qt6_py312h57c4b77_605.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/openexr-3.4.11-h23d5f1b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/openh264-2.6.0-h4883158_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-64/openjpeg-2.5.4-h52bb76a_0.conda
@@ -1328,6 +1330,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/numpy-1.26.4-py312h8442bc7_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/onnx-1.21.0-py312hb9a4500_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/openblas-0.3.33-openmp_hea878ba_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/osx-arm64/opencv-4.13.0-qt6_py312h50ad3d3_606.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/openexr-3.4.11-hef8b857_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/openh264-2.6.0-hb5b2745_0.conda
       - conda: https://conda.anaconda.org/conda-forge/osx-arm64/openjpeg-2.5.4-hd9e9057_0.conda
@@ -1736,6 +1739,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/onemkl-license-2026.0.0-h57928b3_906.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/onnx-1.21.0-py312hfea84cc_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/opencl-headers-2025.06.13-h826ebb9_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/win-64/opencv-4.13.0-qt6_py312h6065bad_606.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/openexr-3.4.11-h7faf11f_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/openh264-2.6.0-hb17fa0b_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/openjpeg-2.5.4-h0e57b4f_0.conda
@@ -7391,6 +7395,21 @@ packages:
   license_family: Apache
   size: 26915
   timestamp: 1755659851310
+- conda: https://conda.anaconda.org/conda-forge/linux-64/opencv-4.13.0-qt6_py312hf9dabfb_606.conda
+  sha256: 91c0a5a35d16212a714e947f1e73a1371043a806154b624cd94d9e42f2135178
+  md5: 15aeb0d24f34ded6d4325b564cd12f6c
+  depends:
+  - hdf5 >=1.14.6,<1.14.7.0a0
+  - libopencv 4.13.0 qt6_py312h46ef85d_606
+  - libprotobuf >=6.33.5,<6.33.6.0a0
+  - py-opencv 4.13.0 qt6_py312h2638c08_606
+  - python_abi 3.12.* *_cp312
+  license: Apache-2.0
+  license_family: Apache
+  purls: []
+  run_exports: {}
+  size: 28684
+  timestamp: 1775917894210
 - conda: https://conda.anaconda.org/conda-forge/linux-64/openexr-3.3.5-h608838b_1.conda
   sha256: d07e5997570678bfd562052e23f4dae8ec2223de24ad0e0fa58bd34c89aecf46
   md5: 0d8aa07938b8ac5b0aaec781793d39a1
@@ -14429,6 +14448,20 @@ packages:
   purls: []
   size: 5670322
   timestamp: 1776996517976
+- conda: https://conda.anaconda.org/conda-forge/osx-64/opencv-4.13.0-qt6_py312h57c4b77_605.conda
+  sha256: c7519d7e24706e308aea198f708075a65d0fd6f1f4d953723ef3f42001f14d92
+  md5: d2454b91b855f361f1ef72a5de34bee1
+  depends:
+  - libopencv 4.13.0 qt6_py312h16da6a8_605
+  - libprotobuf >=6.33.5,<6.33.6.0a0
+  - py-opencv 4.13.0 qt6_py312h5d0f8e4_605
+  - python_abi 3.12.* *_cp312
+  license: Apache-2.0
+  license_family: Apache
+  purls: []
+  run_exports: {}
+  size: 28536
+  timestamp: 1774792470326
 - conda: https://conda.anaconda.org/conda-forge/osx-64/openexr-3.4.11-h23d5f1b_0.conda
   sha256: 5f0883400a91e11294ecfe6b25e67f0e8f6258f2b4f3f03d3ca4d3e79a2d4097
   md5: 3219b0bc45604fccd6136937430bb265
@@ -18318,6 +18351,21 @@ packages:
   purls: []
   size: 3169910
   timestamp: 1776995504712
+- conda: https://conda.anaconda.org/conda-forge/osx-arm64/opencv-4.13.0-qt6_py312h50ad3d3_606.conda
+  sha256: 5bbcfca8ee8553d114cdaa17921fd64a681133549a716cb73238b37b95d2510b
+  md5: 967e1bf919d6c3f3f92cf8ca1742b8ca
+  depends:
+  - hdf5 >=1.14.6,<1.14.7.0a0
+  - libopencv 4.13.0 qt6_py312hc9399c9_606
+  - libprotobuf >=6.33.5,<6.33.6.0a0
+  - py-opencv 4.13.0 qt6_py312h11ab173_606
+  - python_abi 3.12.* *_cp312
+  license: Apache-2.0
+  license_family: Apache
+  purls: []
+  run_exports: {}
+  size: 28736
+  timestamp: 1775922187199
 - conda: https://conda.anaconda.org/conda-forge/osx-arm64/openexr-3.4.11-hef8b857_0.conda
   sha256: 9ee133e97a8c29722fb3fd7df546b7c95c9262b8144961e893b7360ae4d5ddbf
   md5: 9e8f961749f2c8784df06d243e604bc3
@@ -22088,6 +22136,21 @@ packages:
   purls: []
   size: 56082
   timestamp: 1773844547434
+- conda: https://conda.anaconda.org/conda-forge/win-64/opencv-4.13.0-qt6_py312h6065bad_606.conda
+  sha256: 50937d28e7ea2791c7899a8a2980068f7655d07e67a2e4f4caaf6c5ea4ba5384
+  md5: 621551f5bc318e758156b40ba88ace2f
+  depends:
+  - hdf5 >=1.14.6,<1.14.7.0a0
+  - libopencv 4.13.0 qt6_py312hcb475f0_606
+  - libprotobuf >=6.33.5,<6.33.6.0a0
+  - py-opencv 4.13.0 qt6_py312h88ab253_606
+  - python_abi 3.12.* *_cp312
+  license: Apache-2.0
+  license_family: Apache
+  purls: []
+  run_exports: {}
+  size: 28688
+  timestamp: 1775921473232
 - conda: https://conda.anaconda.org/conda-forge/win-64/openexr-3.4.11-h7faf11f_0.conda
   sha256: 1b196acb69ef71a1ffe974c4ddfef972f9bebe8d9493221cb0bc3c128236bc8d
   md5: 834eec97ef1127e03265c3a2675f30b4

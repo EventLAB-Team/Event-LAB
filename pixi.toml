@@ -50,6 +50,7 @@ sphinx = ">=8.2.3,<9"
 sphinx-rtd-theme = ">=3.1.0,<4"
 myst-parser = ">=5.1.0,<6"
 eventcv = "*"
+opencv = ">=4.13.0,<5"
 
 [target.linux-64.dependencies]
 cuda-version = "12.*"
