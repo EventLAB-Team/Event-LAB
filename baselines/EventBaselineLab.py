@@ -151,6 +151,11 @@ class EventBaseline:
                                 preserve_range=True, anti_aliasing=False)
                     # Apply ground truth tolerance
                     GT = (GT > 0.5).astype(int)
+                else:
+                    # Shapes already agree -- use the ground truth as supplied. Without this
+                    # branch GT stays None and recallAtK dereferences None.shape, so a
+                    # baseline whose matrix happens to match the GT exactly would crash.
+                    GT = GThard
                 r = recallAtK(array, GT, K=k)
                 recalls.append(np.round(r, 2))
             

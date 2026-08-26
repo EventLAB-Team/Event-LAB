@@ -17,7 +17,7 @@ request_input: false # Request input from the user for dataset download
 gps_tolerance: 10 # Tolerance to build the pseudo ground truth (in no. places)
 gps_tolerance_sec: 0.0
 ground_truth_tolerance: 70 # Distance in metres to build the ground truth tolerance
-filter_places_sec: 39 # Filter places to be at least this far apart in time (in seconds)
+filter_places_sec: 0 # Filter places to be at least this far apart in time (in seconds)
 
 # Frame reconstruction parameters
 timewindows: [50] # Int value in msec
@@ -45,3 +45,8 @@ datasets:
     sequences:
       - "R0_FA0"
       - "R0_FS0"
+
+  - name: "qut_event_walking"
+    sequences:
+      - "left"
+      - "right"

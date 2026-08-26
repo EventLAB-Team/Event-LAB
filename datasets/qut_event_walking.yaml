@@ -1,0 +1,50 @@
+---
+# QUT-Event-Walking: a Gardens Point Walking style lateral-shift pair.
+# `left` and `right` walk the same ~850 m loop ~10 min apart on opposite sides of the
+# path, DAVIS346, median lateral offset 4.3 m. Same time of day and weather, so viewpoint
+# is the only thing that changes.
+#
+# The data is already staged at {data_path}/qut_event_walking/{seq}/{seq}.hdf5 (symlinks
+# to the raw capture), so the URLs below are never fetched -- dataloader only downloads
+# when that file is missing. ground_truth.available is false for the same reason: the
+# 25 m radius ground truth is already at ground_truth/left_right_GT.npy and Event-LAB
+# consumes it as-is (eventlab_run.py only generates one when the file is absent).
+dataset:
+  name: qut_event_walking
+  version: "1.0.0"
+  description: "Lateral-shift event VPR pair (DAVIS346, handheld, ~850 m loop, QUT campus)"
+  base_url: ""
+  camera: "davis346"
+  resolution: [346, 260]  # Width, Height -- sparse_event trusts this literally
+
+sequences:
+  left:
+    data:
+      url: ""
+    ground_truth:
+      available: false
+      url: ""
+    hot_pixel:
+      available: false
+      url: ""
+
+  right:
+    data:
+      url: ""
+    ground_truth:
+      available: false
+      url: ""
+    hot_pixel:
+      available: false
+      url: ""
+
+format:
+  data:
+    format: "hdf5"
+    timestamp_val: "us"   # /events/t is int64 microseconds, camera-relative
+    time_scale: 1e-6
+  ground_truth: "parquet"
+  hot_pixel: ""
+
+# No `other.offset` block on purpose: the timestamps are already relative to the start of
+# the recording, so every baseline leaves ref_offset/qry_offset at None.

@@ -169,6 +169,11 @@ class sparse_event_baseline(EventBaseline):
 
         # np.save(f"{self.output_dir}/all_pixels_seq.npy", distance_matrices['all_pixels_seq'])
         np.save(f"{self.output_dir}/subset_seq.npy", distance_matrices['subset_seq'])
+        # compute_distance_matrices already returns the pre-convolution matrix alongside the
+        # sequence-matched one, at no extra cost. Save it too: the eye(seq_length) conv is
+        # unpadded, so `subset_seq` is (R-L+1, Q-L+1) and cannot be indexed against a
+        # per-frame keypoint store, while `subset` is the full (R, Q) and can.
+        np.save(f"{self.output_dir}/subset.npy", distance_matrices['subset'])
 
     def parse_results(self, GT):
         # gather files
