@@ -3,16 +3,18 @@ name = "Event-LAB"
 version = "1.1.0"
 description = "Event-based localization methods benchmarking toolkit"
 channels = ["conda-forge", "robostack-noetic"]
-platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+platforms = [
+    { name = "linux-64-cuda12", platform = "linux-64", cuda = "12" },
+    "osx-64",
+    "osx-arm64",
+    "win-64",
+]
 
 [tasks]
 eventlab = {cmd = "pixi run python eventlab_run.py"}
 getdata = {cmd = "pixi run python eventlab_data.py"}
 batch = {cmd = "pixi run python generate_batch.py batch_config.yaml config.yaml run_batch.sh && pixi run bash run_batch.sh"}
 demo = {cmd = "pixi run python eventlab_run.py eventvlad brisbane_event sunset2 sunrise"}
-
-[system-requirements]
-cuda = "12"
 
 [environments]
 e2vid = {features = ["e2vid"], no-default-feature = true}
@@ -92,8 +94,7 @@ numpy = "<2"
 
 [feature.e2vid]
 channels = ["conda-forge"]
-platforms = ["linux-64"]
-system-requirements = {cuda = "12"}
+platforms = ["linux-64-cuda12"]
 
 [feature.e2vid.dependencies]
 python = "<=3.11"
