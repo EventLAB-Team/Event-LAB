@@ -1,176 +1,216 @@
-import os, yaml
-import numpy as np
+import os
+import shutil
+import subprocess
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
+
+import numpy as np
+import torch
+import yaml
+from loguru import logger
+
 from baselines.EventBaselineLab import EventBaseline
 from baselines.download_baseline import clone_repo
-from datetime import datetime, timezone
-import re, subprocess
-import utils.functional as FUNC
-import tempfile
+from utils.eventcv_frames import offsets_from_dataset_config, render_png_sequence
+
+# Methods whose model is fetched with torch.hub.load (vpr_models/__init__.py).
+# torch.hub prompts on stdin the first time it sees an untrusted repo, which is an
+# EOFError under subprocess, so the one the run needs is pre-approved below.
+_TORCH_HUB_REPOS = {
+    "cosplace": "gmberton/cosplace",
+    "eigenplaces": "gmberton/eigenplaces",
+    "eigenplaces-indoor": "Enrico-Chiavassa/Indoor-VPR",
+    "salad": "serizba/salad",
+    "salad-indoor": "Enrico-Chiavassa/Indoor-VPR",
+    "cricavpr": "Lu-Feng/CricaVPR",
+    "megaloc": "gmberton/MegaLoc",
+    "edtformer": "Tong-Jin01/EDTformer",
+}
+
+
+def _hub_repo_for(method):
+    if method.startswith("anyloc"):
+        return "AnyLoc/DINO"
+    return _TORCH_HUB_REPOS.get(method)
+
 
 class vprmethods_baseline(EventBaseline):
     def __init__(self):
         super().__init__()
-
         self.name = "vprmethods"
-        # Check if the baseline repository is already cloned
         self.repo_path = "./baselines/vpr_methods"
-        # Baseline URL
         self.url = "https://github.com/gmberton/VPR-methods-evaluation.git"
         if not os.path.exists(self.repo_path):
             clone_repo(self.url, destination=self.repo_path)
+
         self.baseline_config_path = './baselines/vprmethods.yaml'
-        # Load the baseline configuration
         with open(self.baseline_config_path, 'r') as file:
             self.baseline_config = yaml.safe_load(file)
-        # Create the data output folder
+
         self.outdir = './output/vprmethods'
         os.makedirs(self.outdir, exist_ok=True)
-        self.matrix_type = 'distance' # options are 'similarity' or 'distance'
+        self.matrix_type = 'distance'
 
     def format_data(self, config, dataset_config, reference, query, timewindow):
         """
-        Format the reference and query data for the baseline.
+        Render the reference and query streams to two flat image folders.
+
+        VPR-methods-evaluation reads `--database_folder`/`--queries_folder` with a
+        recursive glob over .jpg/.jpeg/.png and a plain `sorted()`, so the folders
+        must contain nothing but zero-padded frames. `--no_labels` is passed, so no
+        filename convention is imposed beyond ordering.
         """
         self.config = config
-        # Get experimental details
+        self.timewindow = timewindow
+
+        if config['frame_generator'] == 'reconstruction':
+            raise NotImplementedError(
+                "vprmethods no longer builds E2VID reconstructions: the frame-generation "
+                "pipeline was retired in the EventCV migration (commit 22e0fd2). Set "
+                "frame_generator: frames in config.yaml to render event frames with "
+                "EventCV instead.")
+
         ref_info = reference.get_dataset_info()
         query_info = query.get_dataset_info()
+        ref_sequence = ref_info['sequence_name']
+        query_sequence = query_info['sequence_name']
+        # Timewindow-tagged, matching the label this baseline has always written.
+        self.ref_name = f'{ref_sequence}-{config["frame_generator"]}-{timewindow}'
+        self.query_name = f'{query_sequence}-{config["frame_generator"]}-{timewindow}'
 
-        ref_name = ref_info['sequence_name']
-        query_name = query_info['sequence_name']
+        resolution = tuple(dataset_config['dataset']['resolution'])  # (W, H)
+        min_gap_sec = float(config.get("filter_places_sec", 0))
+        representation = self.baseline_config.get('representation', 'redblue')
+        ref_offset, qry_offset = offsets_from_dataset_config(
+            dataset_config, ref_sequence, query_sequence)
 
-        # from ref_info['file_path'] dict, find the directory that matches ref/query name and timewindow
-        self.ref_name = f'{ref_name}-{config["frame_generator"]}-{timewindow}'
-        self.query_name = f'{query_name}-{config["frame_generator"]}-{timewindow}'
-        self.ref_directory = ref_info['file_path'][self.ref_name]
-        self.query_directory = query_info['file_path'][self.query_name]
+        self.temp_dir = tempfile.mkdtemp(prefix="vprmethods_data_")
+        self.ref_dir = os.path.join(self.temp_dir, self.ref_name)
+        self.query_dir = os.path.join(self.temp_dir, self.query_name)
+        for hdf5_path, out_dir, offset in (
+            (ref_info['hdf5_path'], self.ref_dir, ref_offset),
+            (query_info['hdf5_path'], self.query_dir, qry_offset),
+        ):
+            render_png_sequence(
+                hdf5_path, out_dir,
+                timewindow_ms=timewindow, offset_ms=offset,
+                sensor_size=resolution, representation=representation,
+                min_gap_sec=min_gap_sec)
 
-        _RX_FRAME = re.compile(r"^frame_(\d+)\.png$")
-
-        def list_frame_files(dirpath: str):
-            paths = []
-            for p in Path(dirpath).iterdir():
-                m = _RX_FRAME.fullmatch(p.name)
-                if m:
-                    paths.append((int(m.group(1)), p))
-            paths.sort(key=lambda t: t[0])  # numeric sort
-            return [p for _, p in paths]
-
-        # usage
-        if config['frame_generator'] == 'reconstruction':
-            self.ref_directory = os.path.join(self.ref_directory, 'reconstruction')
-            self.query_directory = os.path.join(self.query_directory, 'reconstruction')
-
-        ref_files   = list_frame_files(self.ref_directory)
-        query_files = list_frame_files(self.query_directory)
-        # after you have ref_files, query_files and min_gap_sec
-        min_gap_sec = float(config.get("filter_places_sec", 60))
-
-        ref_res   = FUNC._apply_time_filter_to_files(ref_files,   self.ref_directory,  min_gap_sec, debug=False)
-        query_res = FUNC._apply_time_filter_to_files(query_files, self.query_directory, min_gap_sec, debug=False)
-
-        # Replace file lists with filtered ones
-        ref_files   = ref_res['files']
-        query_files = query_res['files']
-        print(len(ref_files), "reference frames after filtering")
-
-        # OPTIONAL: Create temporary directory to store converted data, if not using numpy arrays
-        self.temp_dir = tempfile.mkdtemp(prefix="baseline_data_")
-        self.ref_dir = self.ref_directory
-        self.query_dir = self.query_directory
-        os.makedirs(self.ref_dir, exist_ok=True)
-        os.makedirs(self.query_dir, exist_ok=True)
-        # import shutil
-        # # Copy files to temporary directory using shutil
-        # for idx, ref_file in enumerate(ref_files):
-        #     shutil.copy(ref_file, os.path.join(self.ref_dir, f"frame_{idx:06d}.png"))
-
-        # for idx, query_file in enumerate(query_files):
-        #     shutil.copy(query_file, os.path.join(self.query_dir, f"frame_{idx:06d}.png"))
-
-
-        # Set the output folder
-        self.output_dir = os.path.join(self.outdir, f"{ref_info['dataset_name']}", f"{ref_info['sequence_name']}_{query_info['sequence_name']}",
-                                       f"{config['frame_generator']}_{timewindow}")
+        self.output_dir = os.path.join(
+            self.outdir,
+            f"{ref_info['dataset_name']}",
+            f"{ref_sequence}_{query_sequence}",
+            f"{config['frame_generator']}_{timewindow}",
+        )
         os.makedirs(self.output_dir, exist_ok=True)
 
+    def _trust_torch_hub_repo(self, method):
+        """
+        Add the method's torch.hub repo to torch's trusted list, if configured.
+
+        Upstream calls torch.hub.load() without trust_repo=, so on a fresh machine
+        it blocks on an interactive y/N prompt and dies with EOFError under
+        subprocess. This writes the same `trusted_list` entry that trust_repo=True
+        would, for the one repo the configured method needs -- which is third-party
+        code that will be downloaded and executed, hence the explicit yaml gate.
+        """
+        repo = _hub_repo_for(method)
+        if repo is None:
+            return
+        if not self.baseline_config.get('trust_torch_hub', True):
+            logger.warning(
+                f"trust_torch_hub is false and {method} loads {repo} via torch.hub; "
+                "the run will stop at an interactive trust prompt.")
+            return
+
+        import torch.hub
+
+        hub_dir = torch.hub.get_dir()
+        os.makedirs(hub_dir, exist_ok=True)
+        listing = os.path.join(hub_dir, "trusted_list")
+        entry = "_".join(repo.split("/"))
+        existing = set()
+        if os.path.exists(listing):
+            with open(listing) as handle:
+                existing = {line.strip() for line in handle}
+        if entry in existing:
+            return
+        with open(listing, "a") as handle:
+            handle.write(entry + "\n")
+        logger.info(f"Trusting torch.hub repo {repo} for method '{method}' ({listing})")
+
     def build_execute(self, config, data_config, ground_truth):
-        """
-        Build a commandline execute for the baseline with the provided reference, query, and ground truth data.
-        """
+        """Compose the upstream main.py invocation."""
+        self.ground_truth = ground_truth
+        cfg = self.baseline_config
+        self._trust_torch_hub_repo(cfg["method"])
         ref_dir = Path(self.ref_dir).resolve()
         query_dir = Path(self.query_dir).resolve()
+        # Upstream offers cuda|cpu only -- there is no mps option -- and defaults
+        # to cuda, so it must be set explicitly or it fails on macOS.
+        device = cfg.get('device', 'auto')
+        if device == 'auto':
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-        if config['frame_generator'] == 'reconstruction':
-            eval_cmd = (
-                f'python -u main.py '
-                f'--method {self.baseline_config["method"]} '
-                f'--backbone {self.baseline_config["backbone"]} '
-                f'--descriptors_dimension {self.baseline_config["descriptors_dimension"]} '
-                f'--no_labels '
-                f'--database_folder {ref_dir} '
-                f'--queries_folder {query_dir} '
-                f'--save_descriptors'
-            )
+        eval_cmd = (
+            f'python -u main.py '
+            f'--method {cfg["method"]} '
+            f'--backbone {cfg["backbone"]} '
+            f'--descriptors_dimension {cfg["descriptors_dimension"]} '
+            f'--no_labels '
+            f'--database_folder {ref_dir} '
+            f'--queries_folder {query_dir} '
+            f'--device {device} '
+            f'--save_descriptors'
+        )
         self.full_cmd = ["pixi", "run", "bash", "-c", eval_cmd]
 
     def run(self):
-        """
-        Run the baseline.
-        """
-        '''
-        Implement run logic here to retrieve distance matrix and save it for analysis.
-        '''
-        subprocess.run(self.full_cmd, check=True, cwd='baselines/vpr_methods')
-        # Retrieve the features from the latest log directory
+        """Run upstream in its own tree, then build the matrix from its descriptors."""
+        logger.info(f"Running vprmethods: {' '.join(self.full_cmd)}")
+        subprocess.run(self.full_cmd, check=True, cwd=self.repo_path)
+
         log_dir = sorted(Path(self.repo_path).glob("logs/default/*"), key=os.path.getmtime)[-1]
-        # Load the `databse_descriptors.npy` and `query_descriptors.npy` files
         database_descriptors = np.load(log_dir / "database_descriptors.npy")
         query_descriptors = np.load(log_dir / "queries_descriptors.npy")
-        # Compute the distance matrix
+        logger.info(f"Descriptors: database {database_descriptors.shape}, "
+                    f"queries {query_descriptors.shape}")
+
+        # Event-LAB scores (references, queries); upstream descriptors are L2-normalised.
         D = (1 - (query_descriptors @ database_descriptors.T)).T
-        # Save the distance matrices
         np.save(f"{self.output_dir}/distance_matrix.npy", D)
-        
-    
+        logger.info(f"Saved distance matrix {D.shape} to {self.output_dir}")
+
     def parse_results(self, GT):
-        """
-        Summary sheet: upsert by (run_name, ref_query, array_name)
-        Per-run sheet (self.name): upsert summary by (ref_query, array_name),
-        and upsert each PR block keyed by "PR curve for {ref_query} :: {array_name}".
-        """
-        # gather files
         all_files = sorted(list(Path(self.output_dir).glob("*.npy")))
         all_names = [os.path.basename(f).replace(".npy", "") for f in all_files]
         all_arrays = [np.load(f) for f in all_files]
-        GThard = np.load(GT)
         if not all_arrays:
-            print("No .npy result files found in", self.output_dir)
+            logger.warning(f"No .npy result files found in {self.output_dir}")
             return
+        GThard = np.load(GT)
+        for name, array in zip(all_names, all_arrays):
+            if array.shape != GThard.shape:
+                logger.warning(
+                    f"{name} is {array.shape} but the ground truth is {GThard.shape}; "
+                    "run_metrics will nearest-neighbour resize the GT to match.")
 
         timestamp = datetime.now(timezone.utc).replace(tzinfo=None).isoformat()
-
-        # Run evaluation metrics
         rows, pr_curves = self.run_metrics(
-                all_names, 
-                all_arrays, 
-                GThard, 
-                timestamp, 
-                self.name,
-                f'{self.ref_name}_{self.query_name}',
-                matrix_type=self.matrix_type,
-                outdir=self.output_dir,
-                tolerance=self.config['ground_truth_tolerance']
+            all_names,
+            all_arrays,
+            GThard,
+            timestamp,
+            self.name,
+            f'{self.ref_name}_{self.query_name}',
+            matrix_type=self.matrix_type,
+            outdir=self.output_dir,
+            tolerance=self.config.get('ground_truth_tolerance', 0.0)
         )
-
-        # Save results to excel spreadsheet
         self.save_results(rows, pr_curves, self.name, f'{self.ref_name}_{self.query_name}')
 
     def cleanup(self):
-        """
-        Clean up temporary files.
-        """
-        import shutil
         if hasattr(self, 'temp_dir') and os.path.exists(self.temp_dir):
-            shutil.rmtree(self.temp_dir)
+            shutil.rmtree(self.temp_dir, ignore_errors=True)

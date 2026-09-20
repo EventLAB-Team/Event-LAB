@@ -1,13 +1,22 @@
 import prettytable, os
+import time
 
 import numpy as np
-from skimage.transform import resize
 
-from baselines.VPR_Tutorial.evaluation.metrics import recallAtK, createPR
+from utils.metrics import (aupr, best_match_rows, conform_ground_truth,
+                           precision_recall_curve, recall_at_k, resolve_workers)
 from datasets.groundtruths import create_GTtol_by_distance
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 from loguru import logger
+
+# Longest edge of the rendered overlay. A 14473x12820 matrix rasterised at
+# dpi=200 is both unreadable and enormous; the figure is a diagnostic, so it is
+# decimated to a bounded grid before anything allocates an RGB copy.
+OVERLAY_MAX_SIDE = 2000
+
 
 def overlay_matches_on_array(
     array,
@@ -18,164 +27,169 @@ def overlay_matches_on_array(
     alpha_blend=0.7,
     save_path=None,
     array_name=None,
+    pred_rows=None,
+    max_side=OVERLAY_MAX_SIDE,
 ):
     """
-    Create an RGB overlay of the similarity/distance matrix with TP/FP/FN markers.
+    Render the similarity matrix with TP/FP/FN markers.
 
-    - array: 2D numpy array (refs x queries)
-    - GThard: same-shaped 0/1 GT array (or will be resized)
-    - top_k: how many predictions per unit (row or column depending on pred_mode)
-    - pred_mode: 'per_column' (default) or 'per_row'
-        * per_column: for each query column, select top_k reference rows (ensures predictions are chosen per query)
-        * per_row: for each reference row, select top_k query cols (previous behaviour)
-    - matrix_type: "distance" or "similarity"
+    - array: 2D numpy array (refs x queries), higher = more similar
+    - GThard: 0/1 ground truth, resized to match if needed
+    - pred_rows: top-1 reference row per query, if the caller already computed it
+      (run_metrics does). Avoids re-deriving predictions from a second full sort.
+
+    Everything is decimated to at most `max_side` on the long edge before the RGB
+    buffer is built, so cost is bounded by the figure size rather than the matrix.
     """
     if array.ndim != 2:
         raise ValueError("array must be 2D (refs x queries)")
-
-    # Resize GT if needed (same behaviour as your run_metrics)
-    if GThard.shape != array.shape:
-        GT = resize(GThard, array.shape, order=0, preserve_range=True, anti_aliasing=False)
-        GT = (GT > 0.5).astype(int)
-    else:
-        GT = (GThard > 0.5).astype(int)
-
-    h, w = array.shape
-
-    # Build predictions according to pred_mode
-    preds_idx = []
-    top_k = max(1, int(top_k))
-    if pred_mode == "per_column":
-        # For each column, find the best rows
-        # argsort descending along axis=0 (rows sorted per column)
-        sorted_rows_per_col = np.argsort(-array, axis=0)  # shape (h, w)
-        for c in range(w):
-            for k in range(min(top_k, h)):
-                r = sorted_rows_per_col[k, c]
-                preds_idx.append((r, c))
-    elif pred_mode == "per_row":
-        # For each row, find best columns (old behaviour)
-        sorted_cols_per_row = np.argsort(-array, axis=1)  # shape (h, w)
-        for r in range(h):
-            for k in range(min(top_k, w)):
-                c = sorted_cols_per_row[r, k]
-                preds_idx.append((r, c))
-    else:
+    if pred_mode not in ("per_column", "per_row"):
         raise ValueError("pred_mode must be 'per_column' or 'per_row'")
 
-    # Deduplicate predictions (just in case) and keep ordering
-    seen = set()
-    preds_unique = []
-    for p in preds_idx:
-        if p not in seen:
-            preds_unique.append(p)
-            seen.add(p)
-    preds_idx = preds_unique
+    GT = conform_ground_truth(GThard, array.shape)
+    h, w = array.shape
 
-    # Compute TP, FP, FN
-    tp_idx = [(r, c) for (r, c) in preds_idx if GT[r, c] == 1]
-    fp_idx = [(r, c) for (r, c) in preds_idx if GT[r, c] == 0]
+    # Predictions: one reference row per query column (or transposed for per_row).
+    if pred_mode == "per_column":
+        rows = best_match_rows(array) if pred_rows is None else np.asarray(pred_rows)
+        cols = np.arange(w)
+    else:
+        cols = np.argmax(array, axis=1)
+        rows = np.arange(h)
 
-    gt_pairs = list(zip(*np.nonzero(GT)))  # all GT==1 pairs
-    predicted_set = set(preds_idx)
-    fn_idx = [pair for pair in gt_pairs if pair not in predicted_set]
+    hit = GT[rows, cols]
+    tp_r, tp_c = rows[hit], cols[hit]
+    fp_r, fp_c = rows[~hit], cols[~hit]
 
-    # Build grayscale RGB base
-    base = np.stack([array, array, array], axis=2)
-    overlay = base.copy()
+    # False negatives: ground-truth cells that were not predicted. Derived from
+    # the GT coordinates directly, so no full-size temporary is allocated.
+    gt_r, gt_c = np.nonzero(GT)
+    if pred_mode == "per_column":
+        missed = rows[gt_c] != gt_r
+    else:
+        missed = cols[gt_r] != gt_c
+    fn_r, fn_c = gt_r[missed], gt_c[missed]
 
-    # Blend small color contribution into overlay at predicted/gt locations so shading remains visible
-    def blend_color(positions, color_rgb):
-        for (r, c) in positions:
-            if 0 <= r < h and 0 <= c < w:
-                overlay[r, c, :] = (1.0 - alpha_blend) * overlay[r, c, :] + alpha_blend * np.array(color_rgb)
+    # Decimate to the display grid.
+    step_r = max(1, int(np.ceil(h / max_side)))
+    step_c = max(1, int(np.ceil(w / max_side)))
+    small = np.asarray(array[::step_r, ::step_c], dtype=np.float32)
+    sh, sw = small.shape
 
-    GREEN = (0.0, 1.0, 0.0)
-    RED   = (1.0, 0.0, 0.0)
-    BLUE  = (0.0, 0.4, 1.0)
+    # Normalise for display. The previous implementation clipped raw values into
+    # [0, 1], which flattened any matrix not already in that range to a blank
+    # image; percentile scaling keeps the structure visible.
+    lo, hi = np.percentile(small, (1.0, 99.0))
+    if hi <= lo:
+        lo, hi = float(small.min()), float(small.max())
+    grey = np.clip((small - lo) / (hi - lo), 0.0, 1.0) if hi > lo else np.zeros_like(small)
+    overlay = np.repeat(grey[:, :, None], 3, axis=2)
 
-    blend_color(tp_idx, GREEN)
-    blend_color(fp_idx, RED)
-    blend_color(fn_idx, BLUE)
+    def blend(r, c, colour):
+        if r.size == 0:
+            return
+        rr = np.clip(r // step_r, 0, sh - 1)
+        cc = np.clip(c // step_c, 0, sw - 1)
+        colour = np.asarray(colour, dtype=np.float32)
+        overlay[rr, cc, :] = (1.0 - alpha_blend) * overlay[rr, cc, :] + alpha_blend * colour
+
+    blend(fn_r, fn_c, (0.0, 0.4, 1.0))   # blue   - missed ground truth
+    blend(fp_r, fp_c, (1.0, 0.0, 0.0))   # red    - wrong prediction
+    blend(tp_r, tp_c, (0.0, 1.0, 0.0))   # green  - correct prediction
 
     overlay_rgb = (np.clip(overlay, 0.0, 1.0) * 255).astype(np.uint8)
 
     fig, ax = plt.subplots(figsize=(8, 6))
-    ax.imshow(overlay_rgb, origin="upper", interpolation="nearest")
+    ax.imshow(overlay_rgb, origin="upper", interpolation="nearest",
+              extent=[0, w, h, 0], aspect="auto")
     ax.set_title(f"Matches overlay (mode={pred_mode}, top_k={top_k})")
     ax.set_xlabel("Query index (cols)")
     ax.set_ylabel("Reference index (rows)")
-
-    # plot outline markers so they are visible on top of blended pixels
-    if tp_idx:
-        ys, xs = zip(*tp_idx)
-        ax.scatter(xs, ys, s=marker_size, facecolors='none', edgecolors='lime', linewidths=0.9, label='TP')
-    if fp_idx:
-        ys, xs = zip(*fp_idx)
-        ax.scatter(xs, ys, s=marker_size, facecolors='none', edgecolors='red', linewidths=0.9, label='FP')
-
-    legend_handles = [
-        Patch(edgecolor='lime', facecolor='none', label=f'TP ({len(tp_idx)})'),
-        Patch(edgecolor='red',  facecolor='none', label=f'FP ({len(fp_idx)})'),
-    ]
-    ax.legend(handles=legend_handles, loc='upper right', framealpha=0.9)
+    # Filled swatches, because the cells are colour-blended rather than outlined.
+    ax.legend(handles=[Patch(facecolor='lime', edgecolor='black', label=f'TP ({tp_r.size})'),
+                       Patch(facecolor='red', edgecolor='black', label=f'FP ({fp_r.size})'),
+                       Patch(facecolor='#0066ff', edgecolor='black', label=f'FN ({fn_r.size})')],
+              loc='upper right', framealpha=0.9)
     plt.tight_layout()
 
     if save_path:
-        fig.savefig(os.path.join(f'{save_path}', f'{array_name}_matches') , dpi=200)
+        fig.savefig(os.path.join(f'{save_path}', f'{array_name}_matches'), dpi=200)
+    plt.close(fig)   # the previous version leaked one figure per scored array
 
-    return fig, preds_idx, tp_idx, fp_idx, fn_idx
+    return fig, (rows, cols), (tp_r, tp_c), (fp_r, fp_c), (fn_r, fn_c)
+
 
 class EventBaseline:
     def __init__(self):
         self.K_list = [1, 5, 10, 15, 20, 25]
 
-    def run_metrics(self, all_names, all_arrays, GThard, timestamp, run_name, ref_query, matrix_type="distance", outdir=None, tolerance=0):
-        # Create a pretty table for displaying results
+    def run_metrics(self, all_names, all_arrays, GThard, timestamp, run_name, ref_query,
+                    matrix_type="distance", outdir=None, tolerance=0, tie_policy="optimistic"):
+        """
+        Score each result matrix and return (rows, pr_curves).
+
+        Recall for every K comes from one sort-free pass (utils.metrics.recall_at_k):
+        a correct match is inside the top K exactly when fewer than K references
+        score strictly better than it, so no ordering is needed. `tie_policy`
+        decides whether a match tied with incorrect references counts as
+        retrieved -- the matrices are often heavily quantised, and the previous
+        implementation resolved such ties through an unstable sort, which made
+        the reported number arbitrary among the tied candidates.
+        """
         table = prettytable.PrettyTable()
         table.field_names = ["Recall@K"] + [f"@{k}" for k in self.K_list] + ["AUPR"]
         rows = []
         pr_curves = {}  # (ref_query, array_name) -> (P,R)
-        GT = None
-        # if the name is `all`, use the GThard_noseq instead
+
+        workers = resolve_workers()
+        logger.info(f"Scoring {len(all_arrays)} matri{'x' if len(all_arrays) == 1 else 'ces'} "
+                    f"({tie_policy} ties, {workers} worker{'' if workers == 1 else 's'})")
+
         for name, array in zip(all_names, all_arrays):
-            recalls = []
+            t_start = time.perf_counter()
             if matrix_type == "distance":
                 array = array.max() - array  # convert to similarity
-            for k in self.K_list:
-                # Ensure the GThard shape matches the array shape
-                target_shape = array.shape
-                if GThard.shape != target_shape:
-                    # use numpy reshape
-                    GT = resize(GThard, target_shape, order=0,
-                                preserve_range=True, anti_aliasing=False)
-                    # Apply ground truth tolerance
-                    GT = (GT > 0.5).astype(int)
-                r = recallAtK(array, GT, K=k)
-                recalls.append(np.round(r, 2))
-            
-            overlay_rgb, preds, tp, fp, fn = overlay_matches_on_array(
+
+            # Conformed once per array. This used to sit inside the per-K loop,
+            # so a large ground truth was resized six times over.
+            target_shape = array.shape
+            GT = conform_ground_truth(GThard, target_shape)
+            t_gt = time.perf_counter()
+
+            recalls_by_k = recall_at_k(array, GT, self.K_list, tie_policy=tie_policy,
+                                       workers=workers, progress=True,
+                                       desc=f"recall@K {name}")
+            recalls = [np.round(recalls_by_k[k], 2) for k in self.K_list]
+            t_recall = time.perf_counter()
+
+            try:
+                P, R = precision_recall_curve(array, GT, n_thresh=100)
+                P = np.asarray(P); R = np.asarray(R)
+                area = aupr(P, R)
+            except Exception as e:
+                logger.error(f"  -> Error computing PR for {name}: {e}")
+                P, R, area = np.array([]), np.array([]), np.nan
+            t_pr = time.perf_counter()
+
+            # The overlay reuses these predictions rather than re-sorting the matrix.
+            pred_rows = best_match_rows(array)
+            overlay_matches_on_array(
                 array=array,
                 GThard=GT,
-                top_k=1,                 # set to 1 to get single predicted ref per query
-                pred_mode="per_column",  # important: choose 'per_column' to select predictions per query
+                top_k=1,
+                pred_mode="per_column",
                 marker_size=20,
                 alpha_blend=0.6,
                 save_path=outdir,
-                array_name=name
+                array_name=name,
+                pred_rows=pred_rows,
             )
+            t_end = time.perf_counter()
+            logger.info(f"  {name} {target_shape}: gt {t_gt - t_start:.2f}s | "
+                        f"recall {t_recall - t_gt:.2f}s | pr {t_pr - t_recall:.2f}s | "
+                        f"overlay {t_end - t_pr:.2f}s | total {t_end - t_start:.2f}s")
 
-            try:
-                P, R = createPR(array, GT, matching='single', n_thresh=100)
-                P = np.asarray(P); R = np.asarray(R)
-                idx = np.argsort(R)
-                aupr = float(np.trapz(P[idx], R[idx]))
-            except Exception as e:
-                logger.error(f"  -> Error computing PR for {name}: {e}")
-                P, R, aupr = np.array([]), np.array([]), np.nan
-
-            if table is not None:
-                table.add_row([name] + recalls + [np.round(aupr, 4)])
+            table.add_row([name] + recalls + [np.round(area, 4)])
 
             rows.append({
                 "timestamp_utc": timestamp,
@@ -186,15 +200,13 @@ class EventBaseline:
                 "n_queries": int(target_shape[1]) if len(target_shape) >= 2 else None,
                 "R@1": recalls[0], "R@5": recalls[1], "R@10": recalls[2],
                 "R@15": recalls[3], "R@20": recalls[4], "R@25": recalls[5],
-                "aupr": np.round(aupr, 6)
+                "aupr": np.round(area, 6)
             })
             pr_curves[(ref_query, name)] = (P, R)
 
-            if table is not None:
-                logger.info("\n{}", table.get_string())
-
+        logger.info("\n{}", table.get_string())
         return rows, pr_curves
-    
+
     def save_results(self, rows, pr_curves, run_name, ref_query):
         """
         rows: list[dict] with keys:

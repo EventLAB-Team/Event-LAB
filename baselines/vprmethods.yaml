@@ -1,5 +1,19 @@
 # Configuration for the vprmethods baseline
 method: megaloc
+# NOTE: upstream's parser.py OVERRIDES both of the following when
+# method: megaloc -- backbone becomes "Dinov2" and descriptors_dimension 8448.
+# They are only honoured for the other methods (cosplace, eigenplaces, mixvpr, ...).
 backbone: "ResNet50"
 descriptors_dimension: 512
 no_labels: true
+# EventCV representation rendered to the PNGs upstream consumes. redblue is a
+# 3-channel RGB image (ON red / OFF blue on white), which suits the RGB-pretrained
+# backbones these methods use.
+representation: "redblue"
+# Upstream accepts cuda|cpu only -- there is no mps option.
+device: "auto"
+# Upstream fetches several methods' weights with torch.hub.load() without
+# trust_repo=, which blocks on an interactive prompt under subprocess. When true,
+# the repo the configured method needs is added to torch's trusted list first.
+# This downloads and executes third-party code from that repository.
+trust_torch_hub: true

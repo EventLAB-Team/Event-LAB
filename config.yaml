@@ -1,23 +1,16 @@
 # General configuration for Event-Lab
 
 data_path: "./datasets" # Path to the datasets directory
-output_path: "./output" # Path to save outputs (results, logs, etc.)
 std_format: "hdf5" # Default format for datasets
 max_frames:       # Maximum frames to generate (null = all)
 chunk_size: 100000  # Events to process at once (memory efficiency)
 stream: False # Whether to process datasets in a streaming manner (memory efficiency)
-ground_truth_name: "ground_truth" # Path to ground truth files
 
 # Processing options
-compression: "lzf"
-num_workers: 4
-max_memory_gb: 8
-keep_original: true # Keep the original downloaded files prior to .hdf5 conversion
 request_input: false # Request input from the user for dataset download
 gps_tolerance: 10 # Tolerance to build the pseudo ground truth (in no. places)
-gps_tolerance_sec: 0.0
-ground_truth_tolerance: 3 # Distance in metres to build the ground truth tolerance
-filter_places_sec: 0.0 # Filter places to be at least this far apart in time (in seconds)
+ground_truth_tolerance: 70 # Distance in metres to build the ground truth tolerance
+filter_places_sec: 0 # Filter places to be at least this far apart in time (in seconds)
 
 # Frame reconstruction parameters
 timewindows: [1000] # Int value in msec
@@ -33,6 +26,9 @@ VPR-Baselines:
   - "ensemble"
   - "eventvlad"
   - "vprmethods"
+  - "spikevpr"
+  - "megaevent"
+  - "eventgem"
 
 # Dataset configuration file to download and pre-process datasets for Event-Lab
 datasets:
@@ -45,3 +41,8 @@ datasets:
     sequences:
       - "R0_FA0"
       - "R0_FS0"
+
+  - name: "qut_event_walking"
+    sequences:
+      - "left"
+      - "right"

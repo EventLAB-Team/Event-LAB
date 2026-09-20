@@ -7,6 +7,9 @@ baselines/vpr_sparse_event/
 baselines/LENS/
 baselines/ensemble/
 baselines/vpr_methods/
+baselines/SpikeVPR/
+baselines/megaevent/
+baselines/Event-GeM/
 
 # Dataset directories
 datasets/__pycache__/
@@ -23,3 +26,4 @@ logs/
 # Other
 .vscode/
 utils/__pycache__/
+*.DS_Store

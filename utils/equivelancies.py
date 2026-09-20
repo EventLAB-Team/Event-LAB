@@ -19,7 +19,19 @@ from skimage.transform import resize as imresize
 
 # Optional imports from your codebase
 try:
-    from baselines.VPR_Tutorial.evaluation.metrics import recallAtK, createPR  # type: ignore
+    # Shims onto utils.metrics, preserving the call surface this script already
+    # uses. Only single-best-match PR is implemented, which is all it asks for.
+    from utils.metrics import precision_recall_curve, recall_at_k  # type: ignore
+
+    def recallAtK(S, GT, K=1):
+        return recall_at_k(S, GT, [K])[K]
+
+    def createPR(S, GThard, GTsoft=None, matching="single", n_thresh=100):
+        if GTsoft is not None:
+            raise ValueError("GTsoft is not supported; pass a dilated hard ground truth")
+        if matching != "single":
+            raise ValueError(f"only matching='single' is implemented, got {matching!r}")
+        return precision_recall_curve(S, GThard, n_thresh=n_thresh)
 except Exception:
     recallAtK = None
     createPR = None

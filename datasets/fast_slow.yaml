@@ -79,8 +79,3 @@ format:
     timestamp_val: "us"
   ground_truth: "parquet"  # Format for ground truth data
   hot_pixel: ""  # Format for hot pixel data
-
-other:
-  offset:
-    q_med1: 10000
-    r_med1: 10000

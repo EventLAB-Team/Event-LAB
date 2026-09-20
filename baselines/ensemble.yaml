@@ -1,4 +1,6 @@
 ---
 # Configuration for the sparse event vpr baseline
 gt_tolerance: 2
+# EventCV representation rendered to the PNGs run_eevpr.py consumes.
+representation: "redblue"
 netvlad_path: "./baselines/pytorch-NetVlad" # Path to the pretrained NetVLAD model
