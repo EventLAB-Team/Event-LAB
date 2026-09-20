@@ -8,9 +8,7 @@ import prettytable
 import openpyxl
 from datetime import datetime, timezone
 import re, gdown, time
-import utils.functional as FUNC
 import shutil 
-from datasets.dataloader import make_frame_source
 from loguru import logger
 from utils.utils import convert_offset
 import eventcv as ecv
@@ -71,8 +69,7 @@ class eventvlad_baseline(EventBaseline):
 
         Frame loading is now storage-agnostic through:
 
-            from datasets.dataloader import make_frame_source
-
+            
         This supports the new frames.h5 storage system without manually listing
         frame_*.npy files.
         """

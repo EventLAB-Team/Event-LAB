@@ -1,0 +1,10 @@
+---
+# MegaEvent baseline configuration.
+model: "megaevent_vits14"        # megaevent_vits14 (1.7 GB) | megaevent_vitb14 (2.6 GB)
+ckpt_dir: "./baselines/megaevent/src/ckpts"
+batch_size: 16
+workers: 2                       # never 0: megaevent expands 0 to min(32, cpu_count+4)
+device: "auto"                   # auto -> cuda, else mps, else cpu
+# Render the "accumulate" representation with eventcv's redblue instead of
+# megaevent's NumPy accumulator. Verified bit-identical, 17-45x faster.
+eventcv_redblue: true

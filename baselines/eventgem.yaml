@@ -1,0 +1,11 @@
+---
+# Event-GeM baseline configuration.
+top_k: 50                        # shortlist size handed to the homography re-ranker
+match_filter: "mutual"           # mutual | ratio
+match_ratio: 0.8                 # only used by match_filter: ratio
+ransac_thresh: 5.0
+inlier_weight: 0.05
+keypoint_batch_size: 16
+# cpu keeps upstream's own behaviour on macOS (it has no MPS branch and the
+# MaxViT trunk on MPS is unverified). auto promotes to MPS when CUDA is absent.
+device: "cpu"

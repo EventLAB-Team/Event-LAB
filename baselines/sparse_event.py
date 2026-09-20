@@ -4,7 +4,6 @@ from pathlib import Path
 from baselines.EventBaselineLab import EventBaseline
 from baselines.download_baseline import clone_repo
 from datetime import datetime, timezone
-import utils.functional as FUNC
 from utils.utils import convert_offset
 from tqdm import tqdm
 import eventcv as ecv

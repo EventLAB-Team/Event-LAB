@@ -37,7 +37,9 @@ Frame generation settings
 
     ``reconstruction``
         Build image-like reconstructed frames using the selected reconstruction
-        model.
+        model. **Not currently available:** the E2VID pipeline was retired when
+        event handling moved to EventCV, so baselines that need images render
+        event frames instead.
 
 ``frame_accumulator``
     Controls how events are accumulated into direct event frames.
@@ -62,9 +64,9 @@ Example
 
    timewindows: [250, 500, 750, 1000]
    num_events: [100000]
-   frame_generator: "reconstruction"
+   frame_generator: "frames"
    frame_accumulator: "polarity"
    reconstruction_model: "e2vid"
 
-With this configuration Event-LAB will generate reconstructed frames at four
-time windows and run the selected baseline once for each window.
+With this configuration Event-LAB will run the selected baseline once for each of
+the four time windows, reading events from the recording with EventCV.

@@ -15,7 +15,11 @@ batch_experiments:
     queries: [sunrise]
     baselines: [vprmethods, ensemble]
     config:
-      frame_generator: reconstruction
+      # frame_generator: reconstruction is not currently available -- the E2VID
+      # pipeline was retired in the EventCV migration. Both baselines now render
+      # event frames with EventCV instead.
+      frame_generator: frames
+      frame_accumulator: polarity
       timewindows:
         list: [33, 66, 120, 250]
     baseline_config:

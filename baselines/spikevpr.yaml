@@ -1,0 +1,26 @@
+---
+# SpikeVPR baseline configuration.
+encoder: "sew_resnet34"          # sew_resnet18 | sew_resnet34
+neuron_type: "LIFNode"           # MixVPR head neuron the checkpoint was trained with
+out_channels: 512
+out_rows: 8                      # descriptor dim = out_channels * out_rows = 4096
+checkpoint: "sew_resnet34_brisbane.pth"
+gdrive_id: "1AgDh19lZv5W0IvE7Nm6HZPAXKCMQNiqQ"
+# Digest of the file the README's Drive folder actually serves. The repo's own
+# src/weights/SHA256SUMS.txt lists 19854bde...53ae32 for this filename, which no
+# longer matches; the served file is a valid 271-key checkpoint, so that manifest
+# is treated as stale. A mismatch here warns rather than fails.
+sha256: "ba975ae9722d2bd0401dfabaf019585c5d59254e9c8e2aaf3cc47fdc59e5f615"
+# Truncate each time window to its first N events, reproducing SpikeVPR's eval
+# transform ToFrame(event_count=15000) + FirstSingleFrame(). 0 uses every event
+# in the window, which pushes per-pixel counts far outside the range the
+# network's BatchNorms were fitted on.
+# Measured on brisbane_event sunset2 -> sunset1 @ 1000 ms:
+#   event_count 15000 -> R@1 0.747 | event_count 0 -> R@1 0.388
+event_count: 15000
+# tonic ToFrame bins by polarity VALUE, so ch0 = p==0 (OFF), ch1 = p==1 (ON).
+# Getting this backwards degrades silently -- there is no error, just worse
+# retrieval. Measured: off_on -> R@1 0.747 | on_off -> R@1 0.629
+channel_order: "off_on"
+batch_size: 16
+device: "auto"                   # auto -> cuda, else mps, else cpu

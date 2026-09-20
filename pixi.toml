@@ -18,6 +18,9 @@ demo = {cmd = "pixi run python eventlab_run.py eventvlad brisbane_event sunset2 
 
 [environments]
 e2vid = {features = ["e2vid"], no-default-feature = true}
+spikevpr = {features = ["spikevpr"]}
+megaevent = {features = ["megaevent"]}
+eventgem = {features = ["eventgem"]}
 
 [dependencies]
 python = "*"
@@ -51,8 +54,9 @@ huggingface_hub = ">=1.5.0,<2"
 sphinx = ">=8.2.3,<9"
 sphinx-rtd-theme = ">=3.1.0,<4"
 myst-parser = ">=5.1.0,<6"
-eventcv = "*"
 opencv = ">=4.13.0,<5"
+safetensors = "*" 
+eventcv = ">=1.0.8"
 
 [target.linux-64.dependencies]
 cuda-version = "12.*"
@@ -127,3 +131,26 @@ libcufile-dev = "*"
 libcufft-dev = "*"
 libcurand-dev = "*"
 libcusolver-dev = "*"
+
+# --- Baseline-specific environments -------------------------------------------
+# Each new baseline layers its extra dependencies on top of the default feature,
+# so torch/numpy/eventcv are shared and only the deltas are solved per baseline.
+
+[feature.spikevpr.pypi-dependencies]
+# SpikeVPR pins spikingjelly==0.0.0.0.15 upstream, which was never published to
+# PyPI or conda-forge (0.0.0.0.14 is the newest). It only uses
+# spikingjelly.activation_based.{neuron,functional,layer}, unchanged in .14.
+#
+# Deliberately a PyPI dep, not conda: conda-forge's spikingjelly hard-requires
+# cupy, which has no osx-* build, so that route can never solve on macOS. The
+# PyPI wheel is py3-none-any and its torch/torchvision/numpy/scipy requirements
+# are already satisfied by the conda packages in the default feature.
+spikingjelly = "==0.0.0.0.14"
+
+[feature.megaevent.dependencies]
+safetensors = "*"
+
+[feature.eventgem.dependencies]
+kornia = "*"
+hdf5plugin = "*"
+scikit-learn = "*"

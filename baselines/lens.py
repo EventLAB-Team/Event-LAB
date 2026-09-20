@@ -9,6 +9,7 @@ from baselines.EventBaselineLab import EventBaseline
 from baselines.download_baseline import clone_repo
 from datetime import datetime, timezone
 from utils.utils import convert_offset
+from utils.eventcv_frames import kept_place_indices
 import eventcv as ecv
 
 class LENS_baseline(EventBaseline):
@@ -40,32 +41,6 @@ class LENS_baseline(EventBaseline):
         return ecv.open(hdf5_path, **kwargs)
 
     @staticmethod
-    def _kept_place_indices(n_slices, timewindow_ms, min_gap_sec):
-        """
-        Greedy temporal thinning over fixed-duration frames.
-
-        EventCV renders uniform dt_ms frames, so frame i sits at a deterministic
-        time i * dt_sec (the absolute offset is constant and cancels in the
-        pairwise gap). This reproduces the greedy "keep frames >= min_gap_sec
-        apart" filter that used to live in make_frame_source, without needing any
-        per-frame tick metadata.
-        """
-        if not min_gap_sec or min_gap_sec <= 0:
-            return list(range(n_slices))
-        dt_sec = float(timewindow_ms) / 1000.0
-        if dt_sec <= 0:
-            return list(range(n_slices))
-
-        kept = []
-        last_kept_t = None
-        for i in range(n_slices):
-            t = i * dt_sec
-            if last_kept_t is None or (t - last_kept_t) >= min_gap_sec:
-                kept.append(i)
-                last_kept_t = t
-        return kept
-
-    @staticmethod
     def _frame_to_uint8(frame):
         """Collapse a single [C,H,W] (or [H,W]) count frame to a uint8 image."""
         frame = np.asarray(frame)
@@ -82,7 +57,7 @@ class LENS_baseline(EventBaseline):
         dataloader expects. Returns the number of places written.
         """
         n_slices = int(reader.n_slices)
-        kept = self._kept_place_indices(n_slices, timewindow, min_gap_sec)
+        kept = kept_place_indices(n_slices, timewindow, min_gap_sec)
         if len(kept) <= 0:
             raise ValueError(
                 f"No frames available for LENS input (n_slices={n_slices}, "

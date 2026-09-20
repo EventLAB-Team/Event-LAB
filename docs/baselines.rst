@@ -25,7 +25,7 @@ Available baselines
      - Uses reconstructed frames and EventVLAD weights.
    * - Ensemble-Event-VPR
      - ``ensemble``
-     - Runs the ensemble baseline over prepared event frames.
+     - Compares several temporal windows; frames are rendered with EventCV.
    * - LENS
      - ``lens``
      - Runs the LENS baseline with its own baseline config.
@@ -34,7 +34,16 @@ Available baselines
      - Samples sparse event pixels from generated frames.
    * - VPR-Methods
      - ``vprmethods``
-     - Runs image VPR methods on reconstructed frames.
+     - Runs image VPR methods over EventCV-rendered event frames.
+   * - SpikeVPR
+     - ``spikevpr``
+     - Spiking SEW-ResNet + MixVPR over ON/OFF event frames. Brisbane resolution only.
+   * - MegaEvent
+     - ``megaevent``
+     - DINOv2 + SALAD over EventCV ``redblue`` frames.
+   * - Event-GeM
+     - ``eventgem``
+     - SuperEvent features with homography re-ranking; scores shortlist and re-ranked.
 
 Baseline configuration
 ----------------------

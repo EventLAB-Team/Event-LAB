@@ -70,7 +70,7 @@ Parameters for generating event frames in Event-LAB are controlled using the `co
 # Frame reconstruction parameters
 timewindows: [33, 66, 99, 120] # The time window to collect events over
 num_events: [25000, 50000, 75000, 100000] # The maximum number of events per frame, only used if frame_generator is "eventcount"
-frame_generator: "reconstruction" # Options: "frames", "eventcount", "reconstruction"
+frame_generator: "frames" # Options: "frames", "eventcount" ("reconstruction" is currently unavailable)
 frame_accumulator: "eventcount"    # Options: "count", "polarity" (default), "timestamp"
 reconstruction_model: "e2vid"  # Options: "firenet", "e2vid (default)"
 ```
@@ -106,6 +106,9 @@ For the demonstration version of the repository, we have implemented two baselin
 | LENS | [AdamDHines/LENS](https://github.com/AdamDHines/LENS) | `lens` |
 | Sparse-Event-VPR | [Tobias-Fischer/sparse-event-vpr](https://github.com/Tobias-Fischer/sparse-event-vpr) | `sparse_event` |
 | VPR-Methods | [gmberton/VPR-methods-evaluation](https://github.com/gmberton/VPR-methods-evaluation) | `vprmethods` |
+| SpikeVPR | [GeoffroyK/SpikeVPR](https://github.com/GeoffroyK/SpikeVPR) | `spikevpr` |
+| MegaEvent | [AdamDHines/megaevent](https://github.com/AdamDHines/megaevent) | `megaevent` |
+| Event-GeM | [AdamDHines/Event-GeM](https://github.com/AdamDHines/Event-GeM) | `eventgem` |
 
 | Dataset | Source | Invocation |
 | --- | --- | --- |
