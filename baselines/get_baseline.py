@@ -1,10 +1,7 @@
-import os
-from baselines.download_baseline import clone_repo
-
-# Ensure the standardized metrics repo (VPR-Tutorial) is cloned
-if not os.path.exists("./baselines/VPR_Tutorial"):
-    clone_repo("https://github.com/stschubert/VPR_Tutorial.git", destination="./baselines/VPR_Tutorial")
-
+# Recall and precision/recall live in utils.metrics. Event-LAB used to clone
+# stschubert/VPR_Tutorial here and call into it, but that project is GPL-3.0
+# while Event-LAB is MIT, and its recallAtK resolved ties through an unstable
+# sort. utils.metrics reimplements both metrics with an explicit tie policy.
 from baselines.lens import LENS_baseline
 from baselines.sparse_event import sparse_event_baseline
 from baselines.ensemble import ensemble_baseline

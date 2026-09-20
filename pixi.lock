@@ -1622,6 +1622,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/cuda-nvrtc-13.3.33-hac47afa_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/dav1d-1.2.1-hcfcfb64_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/double-conversion-3.4.0-hac47afa_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/win-64/eventcv-1.0.8-py312h7fb921c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/expat-2.8.1-hac47afa_1.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/expelliarmus-1.1.12-py312he06e257_3.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/faiss-1.14.3-py312cuda130h1dee060_201_cuda.conda
@@ -3897,6 +3898,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/dav1d-1.2.1-hcfcfb64_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/double-conversion-3.4.0-hac47afa_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/epoxy-1.5.10-hfd05255_2.conda
+      - conda: https://conda.anaconda.org/conda-forge/win-64/eventcv-1.0.8-py312h7fb921c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/expat-2.8.1-hac47afa_1.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/expelliarmus-1.1.12-py312h5247d40_5.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/faiss-1.14.3-py312cuda130h1dee060_201_cuda.conda
@@ -5788,6 +5790,7 @@ environments:
       - conda: https://conda.anaconda.org/conda-forge/win-64/cuda-nvrtc-13.4.92-hac47afa_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/dav1d-1.2.1-hcfcfb64_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/double-conversion-3.4.0-hac47afa_0.conda
+      - conda: https://conda.anaconda.org/conda-forge/win-64/eventcv-1.0.8-py312h7fb921c_0.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/expat-2.8.1-hac47afa_1.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/expelliarmus-1.1.12-py312h5247d40_5.conda
       - conda: https://conda.anaconda.org/conda-forge/win-64/faiss-1.14.3-py312cuda130h1dee060_201_cuda.conda

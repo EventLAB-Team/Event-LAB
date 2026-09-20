@@ -3,7 +3,6 @@ import numpy as np
 from pathlib import Path
 from baselines.EventBaselineLab import EventBaseline
 from baselines.download_baseline import clone_repo
-from baselines.VPR_Tutorial.evaluation.metrics import recallAtK, createPR
 import prettytable
 import openpyxl
 from datetime import datetime, timezone
