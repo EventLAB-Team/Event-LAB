@@ -35,7 +35,7 @@ from utils.metrics import (aupr, conform_ground_truth, precision_recall_curve,
                            recall_at_k, resolve_chunk_cols, resolve_workers)
 
 K_LIST = [1, 5, 10, 15, 20, 25]
-GT_PATH = "datasets/brisbane_event/ground_truth/sunset1_sunset2_GT.npy"
+GT_DIR = "datasets/brisbane_event/ground_truth"
 
 # Whether each baseline's saved matrix is a distance (lower = better) and so must
 # be inverted before scoring. Mirrors each wrapper's self.matrix_type.
@@ -147,20 +147,26 @@ def main():
         print("    ok    tie policies behave as documented at the extremes")
 
     # Real matrices produced by the baselines.
-    if os.path.exists(GT_PATH):
-        GThard = np.load(GT_PATH)
-        paths = sorted(glob.glob("output/*/brisbane_event/*/frames_*/*.npy"))
-        paths = [p for p in paths if "_matches" not in p]
-        for path in paths:
-            arr = np.load(path)
-            if arr.ndim != 2:
-                continue
-            baseline = path.split(os.sep)[1]
-            # Score the matrix the same way its wrapper does, or the bracket is
-            # computed on an inverted matrix and means nothing.
-            S = arr if baseline in SIMILARITY_BASELINES else arr.max() - arr
-            GT = conform_ground_truth(GThard, S.shape)
-            problems += check_matrix(path, S, GT)
+    paths = sorted(glob.glob("output/*/brisbane_event/*/frames_*/*.npy"))
+    paths = [p for p in paths if "_matches" not in p]
+    for path in paths:
+        arr = np.load(path)
+        if arr.ndim != 2:
+            continue
+        parts = path.split(os.sep)
+        baseline, ref_query = parts[1], parts[3]
+        # Each output directory is named <reference>_<query>; use ITS ground
+        # truth. Scoring everything against one pair's GT silently compares
+        # against a transposed matrix and makes the reported numbers junk.
+        gt_path = os.path.join(GT_DIR, f"{ref_query}_GT.npy")
+        if not os.path.exists(gt_path):
+            print(f"\n{path}\n    --    no ground truth at {gt_path}; skipped")
+            continue
+        # Score the matrix the same way its wrapper does, or the bracket is
+        # computed on an inverted matrix and means nothing.
+        S = arr if baseline in SIMILARITY_BASELINES else arr.max() - arr
+        GT = conform_ground_truth(np.load(gt_path), S.shape)
+        problems += check_matrix(f"{path}  [GT {ref_query}]", S, GT)
 
     print("\n" + ("ALL CHECKS PASSED" if problems == 0 else f"{problems} CHECK(S) FAILED"))
     return 1 if problems else 0
