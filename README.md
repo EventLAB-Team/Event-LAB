@@ -127,7 +127,9 @@ This repository is licensed under the permissive [MIT License](./LICENSE). If yo
       title={Event-LAB: Towards Standardized Evaluation of Neuromorphic Localization Methods}, 
       author={Adam D. Hines and Alejandro Fontan and Michael Milford and Tobias Fischer},
       year={2026},
-      booktitle={IEEE International Conference on Robotics and Automation}     
+      booktitle={IEEE International Conference on Robotics and Automation},
+      pages={16789-16796},
+      doi={10.1109/ICRA57385.2026.11697007}     
 }
 ```
 
