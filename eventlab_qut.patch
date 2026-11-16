@@ -1,0 +1,57 @@
+diff --git a/baselines/EventBaselineLab.py b/baselines/EventBaselineLab.py
+index 991dca1..ead2ced 100644
+--- a/baselines/EventBaselineLab.py
++++ b/baselines/EventBaselineLab.py
+@@ -151,6 +151,11 @@ class EventBaseline:
+                                 preserve_range=True, anti_aliasing=False)
+                     # Apply ground truth tolerance
+                     GT = (GT > 0.5).astype(int)
++                else:
++                    # Shapes already agree -- use the ground truth as supplied. Without this
++                    # branch GT stays None and recallAtK dereferences None.shape, so a
++                    # baseline whose matrix happens to match the GT exactly would crash.
++                    GT = GThard
+                 r = recallAtK(array, GT, K=k)
+                 recalls.append(np.round(r, 2))
+             
+diff --git a/baselines/sparse_event.py b/baselines/sparse_event.py
+index ecf51ab..4f10e5a 100644
+--- a/baselines/sparse_event.py
++++ b/baselines/sparse_event.py
+@@ -169,6 +169,11 @@ class sparse_event_baseline(EventBaseline):
+ 
+         # np.save(f"{self.output_dir}/all_pixels_seq.npy", distance_matrices['all_pixels_seq'])
+         np.save(f"{self.output_dir}/subset_seq.npy", distance_matrices['subset_seq'])
++        # compute_distance_matrices already returns the pre-convolution matrix alongside the
++        # sequence-matched one, at no extra cost. Save it too: the eye(seq_length) conv is
++        # unpadded, so `subset_seq` is (R-L+1, Q-L+1) and cannot be indexed against a
++        # per-frame keypoint store, while `subset` is the full (R, Q) and can.
++        np.save(f"{self.output_dir}/subset.npy", distance_matrices['subset'])
+ 
+     def parse_results(self, GT):
+         # gather files
+diff --git a/config.yaml b/config.yaml
+index 7ce4a4a..b237062 100644
+--- a/config.yaml
++++ b/config.yaml
+@@ -17,7 +17,7 @@ request_input: false # Request input from the user for dataset download
+ gps_tolerance: 10 # Tolerance to build the pseudo ground truth (in no. places)
+ gps_tolerance_sec: 0.0
+ ground_truth_tolerance: 70 # Distance in metres to build the ground truth tolerance
+-filter_places_sec: 39 # Filter places to be at least this far apart in time (in seconds)
++filter_places_sec: 0 # Filter places to be at least this far apart in time (in seconds)
+ 
+ # Frame reconstruction parameters
+ timewindows: [50] # Int value in msec
+@@ -44,4 +44,9 @@ datasets:
+   - name: "nsavp"
+     sequences:
+       - "R0_FA0"
+-      - "R0_FS0"
+\ No newline at end of file
++      - "R0_FS0"
++
++  - name: "qut_event_walking"
++    sequences:
++      - "left"
++      - "right"

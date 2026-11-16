@@ -22,7 +22,7 @@ Available baselines
      - Notes
    * - EventVLAD
      - ``eventvlad``
-     - Uses reconstructed frames and EventVLAD weights.
+     - Denoises the selected EventCV representation using EventVLAD weights.
    * - Ensemble-Event-VPR
      - ``ensemble``
      - Compares several temporal windows; frames are rendered with EventCV.
@@ -37,10 +37,10 @@ Available baselines
      - Runs image VPR methods over EventCV-rendered event frames.
    * - SpikeVPR
      - ``spikevpr``
-     - Spiking SEW-ResNet + MixVPR over ON/OFF event frames. Brisbane resolution only.
+     - Spiking SEW-ResNet + MixVPR; adapts inputs to two channels at 346×260.
    * - MegaEvent
      - ``megaevent``
-     - DINOv2 + SALAD over EventCV ``redblue`` frames.
+     - DINOv2 + SALAD over the selected representation adapted to RGB.
    * - Event-GeM
      - ``eventgem``
      - SuperEvent features with homography re-ranking; scores shortlist and re-ranked.
@@ -51,7 +51,7 @@ Baseline configuration
 Baseline-specific settings live beside each baseline wrapper, for example
 ``baselines/sparse_event.yaml`` and ``baselines/eventvlad.yaml``. These files
 control method settings, while ``config.yaml`` controls shared Event-LAB
-settings such as time windows and frame generation.
+settings such as time windows and EventCV representations.
 
 Outputs
 -------

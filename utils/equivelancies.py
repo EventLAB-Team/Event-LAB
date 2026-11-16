@@ -37,11 +37,6 @@ except Exception:
     createPR = None
 
 try:
-    from utils.functional import create_GTtol  # type: ignore
-except Exception:
-    create_GTtol = None
-
-try:
     import prettytable  # type: ignore
 except Exception:
     prettytable = None
@@ -57,14 +52,6 @@ def _ensure_binary_gt(gt: np.ndarray, target_shape: tuple[int, int], thresh: flo
         out = imresize(gt, target_shape, order=0, preserve_range=True, anti_aliasing=False)
     return (out > thresh)
 
-def _gt_with_tolerance(gt_bool: np.ndarray, tolerance: int) -> np.ndarray:
-    if create_GTtol is not None:
-        return (create_GTtol(gt_bool.astype(int), tolerance) > 0)
-    from scipy.ndimage import binary_dilation
-    if tolerance <= 0:
-        return gt_bool
-    k = 2 * tolerance + 1
-    return binary_dilation(gt_bool, structure=np.ones((k, k), dtype=bool))
 
 def _argmin_refs(dist: np.ndarray) -> np.ndarray:
     d = np.where(np.isnan(dist), np.inf, dist)
@@ -287,7 +274,6 @@ def main():
     p.add_argument("--gthard", required=True, type=Path)
     p.add_argument("--group-size", type=int, default=4)
     p.add_argument("--gt-thresh", type=float, default=0.5)
-    p.add_argument("--tolerance", type=int, default=30)
     p.add_argument("--rule", choices=["half", "any", "frac"], default="half")
     p.add_argument("--rule-frac", type=float, default=0.75)
     p.add_argument("--outdir", type=Path, default=None)
@@ -319,11 +305,9 @@ def main():
         raise ValueError("Both distance matrices must be 2D [n_queries x n_references].")
     nQ30, nR30 = D30.shape; nQ120, nR120 = D120.shape
 
-    # GT per matrix (+ tolerance)
+    # Use the distance-tolerant ground truth supplied by Event-LAB.
     GT30 = _ensure_binary_gt(GThard, D30.shape, thresh=args.gt_thresh)
     GT120 = _ensure_binary_gt(GThard, D120.shape, thresh=args.gt_thresh)
-    GT30 = _gt_with_tolerance(GT30, args.tolerance)
-    GT120 = _gt_with_tolerance(GT120, args.tolerance)
 
     # Overlap in queries (winner-takes-all requires fixed group-size)
     n_groups_by_30 = nQ30 // args.group_size
@@ -440,7 +424,6 @@ def main():
                 ("group_size", args.group_size),
                 ("rule", args.rule),
                 ("rule_frac", args.rule_frac),
-                ("tolerance", args.tolerance),
                 ("nQ30_used", nQ30_used),
                 ("nQ120_used", nQ120_used),
             ], dtype=object),

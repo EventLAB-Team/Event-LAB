@@ -1,12 +1,14 @@
+from utils.representations import representation_tag
+from utils.configuration import baseline_config_path
 import os, yaml, torch
 import numpy as np
 from pathlib import Path
 from baselines.EventBaselineLab import EventBaseline
-from baselines.download_baseline import clone_repo
+from utils.preparation import prepare_baseline
 from datetime import datetime, timezone
 from utils.utils import convert_offset
 from tqdm import tqdm
-import eventcv as ecv
+from utils.representations import open_reader, channels
 
 class sparse_event_baseline(EventBaseline):
     def __init__(self):
@@ -16,9 +18,8 @@ class sparse_event_baseline(EventBaseline):
         self.repo_path = "./baselines/vpr_sparse_event"
         # Baseline URL
         self.url = "https://github.com/Tobias-Fischer/sparse-event-vpr.git"
-        if not os.path.exists(self.repo_path):
-            clone_repo(self.url, destination=self.repo_path)
-        self.baseline_config_path = './baselines/sparse_event.yaml'
+        prepare_baseline('sparse_event')
+        self.baseline_config_path = baseline_config_path('sparse_event')
         # Load the baseline configuration
         with open(self.baseline_config_path, 'r') as file:
             self.baseline_config = yaml.safe_load(file)
@@ -58,30 +59,33 @@ class sparse_event_baseline(EventBaseline):
                 dataset_config['other']['offset_time_scale'])
 
         # Open reference and query into EventCV
-        reference = ecv.open(ref_info['hdf5_path'], dt_ms=timewindow, offset=ref_offset, hot_pixel_filter=True)
-        query = ecv.open(query_info['hdf5_path'], dt_ms=timewindow, offset=qry_offset, hot_pixel_filter=True)
+        reference = open_reader(ref_info['hdf5_path'], timewindow, ref_offset, config=config)
+        query = open_reader(query_info['hdf5_path'], timewindow, qry_offset, config=config)
 
-        batch_noburst = []
-        for idx in tqdm(range(reference.n_slices), desc="Removing random bursts from reference"):
-            # batch is already [B, H, W] float32, regardless of npy/h5 backend
-            batch_noburst.append(remove_random_bursts(
-                reference.slice(idx).count().numpy(),
-                threshold=10).astype(np.float32)
-                )
+        def frames(reader):
+            for idx in range(reader.n_slices):
+                yield remove_random_bursts(channels(reader.slice(idx), 1), threshold=10)
 
-        # mean over all (burst-filtered) reference frames, used for saliency
-        batch_mean = np.mean(np.stack(batch_noburst), axis=0).astype(np.float64)
+        # First pass computes saliency without retaining full-resolution frames.
+        batch_mean = None
+        for frame in tqdm(frames(reference), total=reference.n_slices, desc="Reference saliency"):
+            if batch_mean is None:
+                batch_mean = np.zeros_like(frame, dtype=np.float64)
+            batch_mean += frame
+        if batch_mean is None:
+            raise ValueError('No reference windows available')
+        batch_mean /= reference.n_slices
 
         # ------------------------------------------------------------------
         # Compute probabilities and sample sparse pixels from the full mean
         # ------------------------------------------------------------------
-        if self.baseline_config['use_saliency']:
-            prob_to_draw_from = adjust_and_normalize_probabilities(batch_mean[0])
+        saliency = np.abs(batch_mean[0])
+        if self.baseline_config['use_saliency'] and saliency.any():
+            prob_to_draw_from = adjust_and_normalize_probabilities(saliency)
         else:
             prob_to_draw_from = None
 
-        im_width  = dataset_config["dataset"]["resolution"][0]
-        im_height = dataset_config["dataset"]["resolution"][1]
+        im_height, im_width = batch_mean.shape[-2:]
 
         random_pixels = np.array(
             get_random_pixels(
@@ -98,18 +102,9 @@ class sparse_event_baseline(EventBaseline):
         y_coords = random_pixels[:, 0]
         x_coords = random_pixels[:, 1]
 
-        # Remove random_pixels indices from reference data
-        self.sparse_reference_data = np.stack(batch_noburst)[:, 0, y_coords, x_coords]
-
-        query_noburst = []
-        for idx in tqdm(range(query.n_slices), desc="Removing random bursts from query"):
-            query_noburst.append(remove_random_bursts(
-                query.slice(idx).count().numpy(),
-                threshold=10).astype(np.float32)
-            )
-
-        # remove indices from query_noburst
-        self.sparse_query_data = np.stack(query_noburst)[:, 0, y_coords, x_coords]
+        # Second pass retains only the selected pixels, never the frame bank.
+        self.sparse_reference_data = np.stack([frame[0, y_coords, x_coords] for frame in frames(reference)])
+        self.sparse_query_data = np.stack([frame[0, y_coords, x_coords] for frame in frames(query)])
 
         # Create sparse_event dict for downstream distance computation
         self.frames_sets = {
@@ -120,7 +115,7 @@ class sparse_event_baseline(EventBaseline):
             self.outdir,
             f"{ref_info['dataset_name']}",
             f"{ref_info['sequence_name']}_{query_info['sequence_name']}",
-            f"{config['frame_generator']}_{timewindow}",
+            f"{representation_tag(config)}_{timewindow}",
         )
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -191,8 +186,7 @@ class sparse_event_baseline(EventBaseline):
             self.name,
             f'{self.ref_name}_{self.query_name}',
             matrix_type=self.matrix_type,
-            outdir=self.output_dir,
-            tolerance=self.config.get('ground_truth_tolerance', 0.0)
+            outdir=self.output_dir
         )
 
         self.save_results(rows, pr_curves, self.name, f'{self.ref_name}_{self.query_name}')

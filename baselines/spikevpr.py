@@ -1,21 +1,20 @@
-import hashlib
+from utils.representations import representation_tag
+from utils.configuration import baseline_config_path
 import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-import gdown
 import numpy as np
 import yaml
 from loguru import logger
 
 from baselines.EventBaselineLab import EventBaseline
-from baselines.download_baseline import clone_repo
+from utils.preparation import prepare_baseline
 from utils.utils import convert_offset, pixi_run
 
 # SpikeVPR's MixVPR head is built with in_h * in_w == 99, which is the layer4
 # feature map of a 260x346 input and nothing else (factory.py:17-19, 41-43).
-_SUPPORTED_RESOLUTION = (346, 260)  # (W, H), matching the dataset YAML convention
 
 
 class spikevpr_baseline(EventBaseline):
@@ -24,57 +23,18 @@ class spikevpr_baseline(EventBaseline):
         self.name = "spikevpr"
         self.repo_path = "./baselines/SpikeVPR"
         self.url = "https://github.com/GeoffroyK/SpikeVPR.git"
-        if not os.path.exists(self.repo_path):
-            clone_repo(self.url, destination=self.repo_path)
+        prepare_baseline('spikevpr')
 
-        self.baseline_config_path = './baselines/spikevpr.yaml'
+        self.baseline_config_path = baseline_config_path('spikevpr')
         with open(self.baseline_config_path, 'r') as file:
             self.baseline_config = yaml.safe_load(file)
 
-        # Upstream's download_weights.sh is an unusable placeholder (BASE_URL is
-        # literally REPLACE_ME, and it shells out to sha256sum, which macOS lacks),
-        # so fetch the checkpoint from the public Drive folder the README links to.
-        # Guarded independently of the clone: a failed download must be retried.
-        self.checkpoint = os.path.join(
-            self.repo_path, "src", "weights", self.baseline_config['checkpoint'])
-        if not os.path.exists(self.checkpoint):
-            os.makedirs(os.path.dirname(self.checkpoint), exist_ok=True)
-            gdown.download(id=self.baseline_config['gdrive_id'],
-                           output=self.checkpoint, quiet=False)
-        self._verify_checkpoint()
+        self.checkpoint = os.path.join(self.repo_path, 'src', 'weights', self.baseline_config['checkpoint'])
 
         self.outdir = './output/spikevpr'
         os.makedirs(self.outdir, exist_ok=True)
         # Cosine similarity between L2-normalised descriptors: higher is better.
         self.matrix_type = 'similarity'
-
-    def _verify_checkpoint(self):
-        """
-        Checksum the Drive download to catch truncation or an HTML error page.
-
-        Deliberately a warning, not a hard failure. The file currently served
-        from the README's Drive folder does not match the digest in the repo's
-        src/weights/SHA256SUMS.txt -- that manifest is stale, and the served file
-        loads cleanly as a 271-key SEW-ResNet34 + MixVPR state dict. Raising here
-        would make the baseline permanently unrunnable on an upstream bookkeeping
-        slip, so `sha256` below pins what the folder actually serves.
-        """
-        expected = self.baseline_config.get('sha256')
-        if not expected:
-            return
-        digest = hashlib.sha256()
-        with open(self.checkpoint, 'rb') as handle:
-            for chunk in iter(lambda: handle.read(1 << 20), b''):
-                digest.update(chunk)
-        actual = digest.hexdigest()
-        if actual != expected:
-            logger.warning(
-                f"Checksum mismatch for {self.checkpoint}: expected {expected}, got {actual}. "
-                "The upstream checkpoint may have been re-uploaded. Delete the file to "
-                "re-download it, or update `sha256` in baselines/spikevpr.yaml if this is "
-                "the intended weights file.")
-            return
-        logger.info(f"Verified checksum of {os.path.basename(self.checkpoint)}")
 
     def format_data(self, config, dataset_config, reference, query, timewindow):
         """Resolve the two recordings, their offsets, and the output directory."""
@@ -82,12 +42,6 @@ class spikevpr_baseline(EventBaseline):
         self.timewindow = timewindow
 
         resolution = tuple(dataset_config['dataset']['resolution'])
-        if resolution != _SUPPORTED_RESOLUTION:
-            raise ValueError(
-                f"SpikeVPR only supports {_SUPPORTED_RESOLUTION} (W, H) sensors; "
-                f"{dataset_config['dataset']['name']} is {resolution}. Its MixVPR head is "
-                "built for a 99-element feature map and will fail on any other resolution.")
-
         ref_info = reference.get_dataset_info()
         query_info = query.get_dataset_info()
         self.ref_name = ref_info['sequence_name']
@@ -107,7 +61,7 @@ class spikevpr_baseline(EventBaseline):
             self.outdir,
             f"{ref_info['dataset_name']}",
             f"{self.ref_name}_{self.query_name}",
-            f"{config['frame_generator']}_{timewindow}",
+            f"{representation_tag(config)}_{timewindow}",
         )
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -119,7 +73,7 @@ class spikevpr_baseline(EventBaseline):
 
     def _descriptor_path(self, sequence, offset):
         cfg = self.baseline_config
-        tag = f"{sequence}-{self.timewindow}ms-ec{cfg['event_count']}-{cfg['channel_order']}"
+        tag = f"{sequence}-{self.timewindow}ms-{representation_tag(self.config)}-{cfg['channel_order']}"
         if offset is not None:
             tag += f"-off{int(offset)}"
         return os.path.join(self.descriptor_dir, f"{tag}.npy")
@@ -134,7 +88,7 @@ class spikevpr_baseline(EventBaseline):
             f"--sensor_width {self.resolution[0]} --sensor_height {self.resolution[1]} "
             f"--encoder {cfg['encoder']} --neuron_type {cfg['neuron_type']} "
             f"--out_channels {cfg['out_channels']} --out_rows {cfg['out_rows']} "
-            f"--event_count {cfg['event_count']} --channel_order {cfg['channel_order']} "
+            f"--channel_order {cfg['channel_order']} "
             f"--batch_size {cfg['batch_size']} --device {cfg['device']}"
         )
         if offset is not None:
@@ -197,8 +151,7 @@ class spikevpr_baseline(EventBaseline):
             self.name,
             f'{self.ref_name}_{self.query_name}',
             matrix_type=self.matrix_type,
-            outdir=self.output_dir,
-            tolerance=self.config.get('ground_truth_tolerance', 0.0)
+            outdir=self.output_dir
         )
         self.save_results(rows, pr_curves, self.name, f'{self.ref_name}_{self.query_name}')
 

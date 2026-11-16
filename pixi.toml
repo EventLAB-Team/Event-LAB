@@ -11,19 +11,22 @@ platforms = [
 ]
 
 [tasks]
+tui = "python eventlab_tui.py"
+config = "python eventlab_config.py"
+prepare = "python eventlab_prepare.py"
 eventlab = {cmd = "pixi run python eventlab_run.py"}
 getdata = {cmd = "pixi run python eventlab_data.py"}
-batch = {cmd = "pixi run python generate_batch.py batch_config.yaml config.yaml run_batch.sh && pixi run bash run_batch.sh"}
+batch = "python eventlab_batch.py"
 demo = {cmd = "pixi run python eventlab_run.py eventvlad brisbane_event sunset2 sunrise"}
 verify-metrics = {cmd = "pixi run python utils/verify_metrics.py"}
 
 [environments]
-e2vid = {features = ["e2vid"], no-default-feature = true}
 spikevpr = {features = ["spikevpr"]}
 megaevent = {features = ["megaevent"]}
 eventgem = {features = ["eventgem"]}
 
 [dependencies]
+textual = ">=8.2,<9"
 python = "*"
 pyyaml = "*"
 gdown = "*"
@@ -58,6 +61,7 @@ myst-parser = ">=5.1.0,<6"
 opencv = ">=4.13.0,<5"
 safetensors = "*" 
 eventcv = ">=1.0.8"
+onnxruntime-cpp = ">=1.17,<2"
 
 [target.linux-64.dependencies]
 cuda-version = "12.*"
@@ -96,42 +100,6 @@ samna = "*"
 
 [target.osx-64.dependencies]
 numpy = "<2"
-
-[feature.e2vid]
-channels = ["conda-forge"]
-platforms = ["linux-64-cuda12"]
-
-[feature.e2vid.dependencies]
-python = "<=3.11"
-numpy = ">=1.6.0,<1.20"
-pandas = "*"
-opencv = "*"
-scipy = "*"
-pyyaml = "*"
-h5py = "*"
-requests = "*"
-tqdm = "*"
-matplotlib = "*"
-pillow = "*"
-cuda-version = "12.*"
-pytorch-gpu = "*"
-cuda-cudart-dev = "*"
-cuda-crt = "*"
-cudnn = "*"
-libcusparse-dev = "*"
-cuda-driver-dev = "*"
-cuda-nvcc = "*"
-cuda-nvrtc-dev = "*"
-cuda-nvtx-dev = "*"
-cuda-nvml-dev = "*"
-cuda-profiler-api = "*"
-cusparselt = "*"
-libcublas-dev = "*"
-libcudss-dev = "*"
-libcufile-dev = "*"
-libcufft-dev = "*"
-libcurand-dev = "*"
-libcusolver-dev = "*"
 
 # --- Baseline-specific environments -------------------------------------------
 # Each new baseline layers its extra dependencies on top of the default feature,

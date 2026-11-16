@@ -27,8 +27,7 @@ Batch configuration
        queries: [sunrise]
        baselines: [sparse_event, lens, eventvlad]
        config:
-         frame_generator: frames
-         frame_accumulator: polarity
+         representation: polarity
          timewindows:
            list: [33, 66, 120, 250]
 

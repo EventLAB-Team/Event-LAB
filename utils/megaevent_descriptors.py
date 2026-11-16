@@ -24,11 +24,16 @@ import numpy._core.multiarray  # noqa: F401
 import argparse
 import os
 import sys
+from pathlib import Path
+
+# Direct script execution puts utils/ first; resolve the project package instead.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 from loguru import logger
 
-import eventcv as ecv
+import torch
+from utils.representations import open_reader, image_uint8, runtime_config
 
 
 def allow_numpy2_reconstruct():
@@ -50,25 +55,27 @@ def allow_numpy2_reconstruct():
     )
 
 
-def use_eventcv_redblue(events_module):
-    """
-    Replace MegaEvent's hand-rolled NumPy accumulator with EventCV's `redblue`.
+class RepresentationDataset:
+    def __init__(self, path, window_ms, offset, config, transform):
+        self.path, self.window_ms, self.offset = path, window_ms, offset
+        self.config, self.transform = config, transform
+        self.reader = None
+        self.length = self.open().n_slices
 
-    `representations.accumulate_numpy` and `EventStream.redblue()` produce
-    bit-identical (3, H, W) uint8 frames -- verified elementwise on Brisbane
-    sunset2 -- but redblue renders in Rust and is 17-45x faster over a 1 s window.
-    Patched here rather than in the clone: Event-LAB never modifies a checked-out
-    upstream repo.
-    """
-    original = events_module.render_stream
+    def open(self):
+        if self.reader is None:
+            self.reader = open_reader(self.path, self.window_ms, self.offset, config=self.config)
+        return self.reader
 
-    def render_stream(stream, representation, window_ms=50):
-        if representation == "accumulate":
-            return np.asarray(stream.redblue().numpy())
-        return original(stream, representation, window_ms=window_ms)
+    def __len__(self):
+        return self.length
 
-    events_module.render_stream = render_stream
-    logger.info("Using eventcv redblue for the 'accumulate' representation")
+    def __getitem__(self, index):
+        frame = image_uint8(self.open().slice(index))
+        return self.transform(torch.from_numpy(frame).float().div_(255))
+
+    def __getstate__(self):
+        return {**self.__dict__, 'reader': None}
 
 
 def main():
@@ -85,37 +92,31 @@ def main():
     ap.add_argument("--batch_size", type=int, default=16)
     ap.add_argument("--workers", type=int, default=2)
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "cuda", "mps"])
-    ap.add_argument("--hot_pixel_filter", action=argparse.BooleanOptionalAction, default=True)
-    ap.add_argument("--eventcv_redblue", action=argparse.BooleanOptionalAction, default=True)
     args = ap.parse_args()
 
     src = os.path.abspath(os.path.join(args.repo_path, "src"))
     if src not in sys.path:
         sys.path.insert(0, src)
 
-    from megaevent import events as events_module
     from megaevent.checkpoints import load_model, resolve_model
     from megaevent.eval import extract
-    from megaevent.events import EventDataset, StreamOptions
+    from megaevent.events import eval_transform
     from megaevent.runtime import device_for
 
-    if args.eventcv_redblue:
-        use_eventcv_redblue(events_module)
     allow_numpy2_reconstruct()
 
     device = device_for(args.device)
     checkpoint = resolve_model(args.model, args.ckpt_dir)
     logger.info(f"MegaEvent {args.model} on {device}: {checkpoint}")
     network, cfg = load_model(checkpoint, device)
-    logger.info(f"representation={cfg.representation} desc_dim={cfg.desc_dim} "
+    logger.info(f"checkpoint representation={cfg.representation} desc_dim={cfg.desc_dim} "
                 f"eval_size={getattr(cfg, 'eval_img_size', None) or cfg.H}")
 
-    options = StreamOptions(
-        window_ms=args.window_ms,
-        hot_pixel_filter=args.hot_pixel_filter,
-        offset_ms=args.offset,
-    )
-    dataset = EventDataset(args.hdf5_path, cfg, options)
+    config = runtime_config()
+    dataset = RepresentationDataset(args.hdf5_path, args.window_ms, args.offset, config, eval_transform(cfg))
+    # Recurrent state must follow the whole sequence, not interleaved worker batches.
+    if config.get('representation') == 'reconstruction':
+        args.workers = 0
     logger.info(f"{len(dataset)} windows from {args.hdf5_path}")
 
     os.makedirs(os.path.dirname(os.path.abspath(args.out)), exist_ok=True)

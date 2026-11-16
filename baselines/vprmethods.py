@@ -1,3 +1,5 @@
+from utils.representations import representation_tag
+from utils.configuration import baseline_config_path
 import os
 import shutil
 import subprocess
@@ -11,7 +13,7 @@ import yaml
 from loguru import logger
 
 from baselines.EventBaselineLab import EventBaseline
-from baselines.download_baseline import clone_repo
+from utils.preparation import prepare_baseline
 from utils.eventcv_frames import offsets_from_dataset_config, render_png_sequence
 
 # Methods whose model is fetched with torch.hub.load (vpr_models/__init__.py).
@@ -41,10 +43,9 @@ class vprmethods_baseline(EventBaseline):
         self.name = "vprmethods"
         self.repo_path = "./baselines/vpr_methods"
         self.url = "https://github.com/gmberton/VPR-methods-evaluation.git"
-        if not os.path.exists(self.repo_path):
-            clone_repo(self.url, destination=self.repo_path)
+        prepare_baseline('vprmethods')
 
-        self.baseline_config_path = './baselines/vprmethods.yaml'
+        self.baseline_config_path = baseline_config_path('vprmethods')
         with open(self.baseline_config_path, 'r') as file:
             self.baseline_config = yaml.safe_load(file)
 
@@ -64,24 +65,16 @@ class vprmethods_baseline(EventBaseline):
         self.config = config
         self.timewindow = timewindow
 
-        if config['frame_generator'] == 'reconstruction':
-            raise NotImplementedError(
-                "vprmethods no longer builds E2VID reconstructions: the frame-generation "
-                "pipeline was retired in the EventCV migration (commit 22e0fd2). Set "
-                "frame_generator: frames in config.yaml to render event frames with "
-                "EventCV instead.")
-
         ref_info = reference.get_dataset_info()
         query_info = query.get_dataset_info()
         ref_sequence = ref_info['sequence_name']
         query_sequence = query_info['sequence_name']
         # Timewindow-tagged, matching the label this baseline has always written.
-        self.ref_name = f'{ref_sequence}-{config["frame_generator"]}-{timewindow}'
-        self.query_name = f'{query_sequence}-{config["frame_generator"]}-{timewindow}'
+        self.ref_name = f'{ref_sequence}-{representation_tag(config)}-{timewindow}'
+        self.query_name = f'{query_sequence}-{representation_tag(config)}-{timewindow}'
 
         resolution = tuple(dataset_config['dataset']['resolution'])  # (W, H)
         min_gap_sec = float(config.get("filter_places_sec", 0))
-        representation = self.baseline_config.get('representation', 'redblue')
         ref_offset, qry_offset = offsets_from_dataset_config(
             dataset_config, ref_sequence, query_sequence)
 
@@ -95,14 +88,14 @@ class vprmethods_baseline(EventBaseline):
             render_png_sequence(
                 hdf5_path, out_dir,
                 timewindow_ms=timewindow, offset_ms=offset,
-                sensor_size=resolution, representation=representation,
+                sensor_size=resolution, config=config,
                 min_gap_sec=min_gap_sec)
 
         self.output_dir = os.path.join(
             self.outdir,
             f"{ref_info['dataset_name']}",
             f"{ref_sequence}_{query_sequence}",
-            f"{config['frame_generator']}_{timewindow}",
+            f"{representation_tag(config)}_{timewindow}",
         )
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -206,8 +199,7 @@ class vprmethods_baseline(EventBaseline):
             self.name,
             f'{self.ref_name}_{self.query_name}',
             matrix_type=self.matrix_type,
-            outdir=self.output_dir,
-            tolerance=self.config.get('ground_truth_tolerance', 0.0)
+            outdir=self.output_dir
         )
         self.save_results(rows, pr_curves, self.name, f'{self.ref_name}_{self.query_name}')
 

@@ -6,7 +6,7 @@ class in `baselines/get_baseline.py`, and add the command name to `VPR-Baselines
 in `config.yaml`. See docs/contributing_baselines.rst.
 
 Event data is read through EventCV, never from pre-rendered frame directories --
-`ecv.open(hdf5_path, dt_ms=..., offset=...)` streams a multi-gigabyte recording
+`utils.representations.open_reader(path, timewindow_ms, config=config)` streams a multi-gigabyte recording
 without materialising it. Compare `baselines/sparse_event.py` for an in-process
 baseline, `baselines/vprmethods.py` for one that shells out to an upstream CLI.
 """
@@ -19,7 +19,7 @@ import numpy as np
 import yaml
 from loguru import logger
 
-import eventcv as ecv
+from utils.representations import open_reader, representation_tag
 from baselines.EventBaselineLab import EventBaseline
 from baselines.download_baseline import clone_repo
 from utils.eventcv_frames import offsets_from_dataset_config
@@ -59,24 +59,19 @@ class name_baseline(EventBaseline):
         ref_offset, qry_offset = offsets_from_dataset_config(
             dataset_config, self.ref_name, self.query_name)
 
-        # One reader per recording. `repr` picks the representation: "count",
-        # "redblue" (3-channel RGB), "mcts", "voxel", "tsurf", ... With a repr set,
-        # reader[i] is a dense [C, H, W] array and reader.batch(idx) a [B, C, H, W]
-        # batch, so a torch DataLoader can collate the reader directly.
-        self.ref_reader = ecv.open(
-            ref_info['hdf5_path'], dt_ms=timewindow, offset=ref_offset,
-            hot_pixel_filter=True,
-            sensor_size=tuple(dataset_config['dataset']['resolution']))
-        self.query_reader = ecv.open(
-            query_info['hdf5_path'], dt_ms=timewindow, offset=qry_offset,
-            hot_pixel_filter=True,
-            sensor_size=tuple(dataset_config['dataset']['resolution']))
+        # The shared reader respects representation/options/reconstruction settings.
+        self.ref_reader = open_reader(
+            ref_info['hdf5_path'], timewindow, ref_offset,
+            sensor_size=tuple(dataset_config['dataset']['resolution']), config=config)
+        self.query_reader = open_reader(
+            query_info['hdf5_path'], timewindow, qry_offset,
+            sensor_size=tuple(dataset_config['dataset']['resolution']), config=config)
 
         self.output_dir = os.path.join(
             self.outdir,
             f"{ref_info['dataset_name']}",
             f"{self.ref_name}_{self.query_name}",
-            f"{config['frame_generator']}_{timewindow}",
+            f"{representation_tag(config)}_{timewindow}",
         )
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -120,8 +115,7 @@ class name_baseline(EventBaseline):
             self.name,
             f'{self.ref_name}_{self.query_name}',
             matrix_type=self.matrix_type,
-            outdir=self.output_dir,
-            tolerance=self.config.get('ground_truth_tolerance', 0.0)
+            outdir=self.output_dir
         )
         self.save_results(rows, pr_curves, self.name, f'{self.ref_name}_{self.query_name}')
 

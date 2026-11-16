@@ -3,7 +3,7 @@ Render EventCV frames to the on-disk layouts external baselines expect.
 
 Several upstream methods (ensemble-event-vpr, VPR-methods-evaluation) do not read
 events at all -- they consume folders of images. This module is the single place
-that turns a formatted Event-LAB HDF5 recording into such a folder via EventCV,
+that turns an event recording into such a folder via EventCV,
 replacing the pre-rendered frame directories the v1.1.0 migration retired.
 
 Event data is read exclusively through EventCV: one reader per (recording, time
@@ -12,7 +12,8 @@ window), rendered lazily so a multi-gigabyte recording never lands in memory.
 import json
 import os
 
-import eventcv as ecv
+from PIL import Image
+from utils.representations import open_reader, image_uint8
 from loguru import logger
 
 # Both upstream consumers order frames with a plain lexicographic sort, so the
@@ -48,21 +49,9 @@ def kept_place_indices(n_slices, timewindow_ms, min_gap_sec):
     return kept
 
 
-def open_reader(hdf5_path, timewindow_ms, offset_ms=None, representation="redblue",
-                sensor_size=None, hot_pixel_filter=True):
-    """Open a fixed-duration EventCV reader carrying a rendered representation."""
-    kwargs = {"dt_ms": timewindow_ms, "repr": representation,
-              "hot_pixel_filter": hot_pixel_filter}
-    if offset_ms is not None:
-        kwargs["offset"] = offset_ms
-    if sensor_size is not None:
-        kwargs["sensor_size"] = tuple(sensor_size)
-    return ecv.open(hdf5_path, **kwargs)
-
-
 def render_png_sequence(hdf5_path, out_dir, *, timewindow_ms, offset_ms=None,
-                        sensor_size=None, representation="redblue",
-                        min_gap_sec=0.0, colormap="viridis"):
+                        sensor_size=None, config=None,
+                        min_gap_sec=0.0):
     """
     Render one recording to `out_dir/frame_%06d.png` and return the frame times.
 
@@ -70,13 +59,10 @@ def render_png_sequence(hdf5_path, out_dir, *, timewindow_ms, offset_ms=None,
     the framing (i.e. `i * timewindow_ms / 1000` for the kept indices), which is
     exactly what ensemble-event-vpr's `timestamps.txt` expects.
 
-    `representation="redblue"` yields a 3-channel uint8 RGB image (ON red, OFF
-    blue on white) which export_png writes through unchanged -- verified
-    bit-identical to `frame.numpy()`. `colormap` only applies to single-channel
-    representations such as "count".
+    The selected EventCV representation is adapted to RGB for image-only models.
     """
     os.makedirs(out_dir, exist_ok=True)
-    reader = open_reader(hdf5_path, timewindow_ms, offset_ms, representation, sensor_size)
+    reader = open_reader(hdf5_path, timewindow_ms, offset_ms, sensor_size, config)
     n_slices = int(reader.n_slices)
     kept = kept_place_indices(n_slices, timewindow_ms, min_gap_sec)
     if not kept:
@@ -91,10 +77,10 @@ def render_png_sequence(hdf5_path, out_dir, *, timewindow_ms, offset_ms=None,
     else:
         frames = (reader.slice(i) for i in kept)
 
-    paths = ecv.export_png(frames, out_dir, colormap=colormap,
-                           prefix=FRAME_PREFIX, digits=FRAME_DIGITS)
-    logger.info(f"Rendered {len(paths)} {representation} frames "
-                f"({timewindow_ms} ms) to {out_dir}")
+    for index, frame in enumerate(frames):
+        rgb = image_uint8(frame).transpose(1, 2, 0)
+        Image.fromarray(rgb).save(os.path.join(out_dir, f"{FRAME_PREFIX}{index:0{FRAME_DIGITS}d}.png"))
+    logger.info(f"Rendered {len(kept)} frames ({timewindow_ms} ms) to {out_dir}")
     return [i * dt_sec for i in kept]
 
 

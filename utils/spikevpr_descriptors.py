@@ -15,12 +15,16 @@ wrapper to turn into a reference x query matrix.
 import argparse
 import os
 import sys
+from pathlib import Path
+
+# Direct script execution puts utils/ first; resolve the project package instead.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import numpy as np
 import torch
 from loguru import logger
 
-import eventcv as ecv
+from utils.representations import open_reader, channels
 
 
 def resolve_device(requested):
@@ -72,32 +76,6 @@ def build_model(repo_path, checkpoint, encoder, neuron_type, out_channels, out_r
     return model
 
 
-def render_frame(stream, sensor_size, event_count, channel_order):
-    """
-    One (2, H, W) ON/OFF event-count frame, matching SpikeVPR's training input.
-
-    SpikeVPR was trained on tonic ToFrame(sensor_size=(W, H, 2)), which bins by
-    polarity VALUE -- channel 0 is p==0 (OFF), channel 1 is p==1 (ON) -- holding
-    RAW integer counts. eventcv's repr="polarity" is the opposite order and is
-    rescaled to 0-255, so the two count() calls below are used instead.
-
-    ``event_count`` truncates the window to its first N events, reproducing the
-    eval transform ToFrame(event_count=15000) + FirstSingleFrame() so the network
-    sees the per-pixel count distribution its BatchNorms were fitted on, while
-    still yielding exactly one frame per Event-LAB time window.
-    """
-    if event_count:
-        arr = np.asarray(stream.numpy())          # (N, 4), columns x, y, t, p
-        if arr.shape[0] > event_count:
-            stream = ecv.from_numpy(
-                arr[:event_count], sensor_size=sensor_size, time_unit="us"
-            )
-    off = np.asarray(stream.filter_polarity(0).count().numpy())[0]
-    on = np.asarray(stream.filter_polarity(1).count().numpy())[0]
-    pair = [off, on] if channel_order == "off_on" else [on, off]
-    return np.stack(pair).astype(np.float32)
-
-
 def main():
     ap = argparse.ArgumentParser(description="Extract SpikeVPR descriptors for one sequence")
     ap.add_argument("--hdf5_path", required=True, help="Formatted Event-LAB event recording")
@@ -113,25 +91,18 @@ def main():
     ap.add_argument("--neuron_type", default="LIFNode")
     ap.add_argument("--out_channels", type=int, default=512)
     ap.add_argument("--out_rows", type=int, default=8)
-    ap.add_argument("--event_count", type=int, default=15000,
-                    help="Truncate each window to its first N events; 0 uses the whole window")
     ap.add_argument("--channel_order", default="off_on", choices=["off_on", "on_off"])
     ap.add_argument("--batch_size", type=int, default=16)
     ap.add_argument("--device", default="auto")
-    ap.add_argument("--hot_pixel_filter", action=argparse.BooleanOptionalAction, default=True)
     args = ap.parse_args()
 
     sensor_size = (args.sensor_width, args.sensor_height)
     device = resolve_device(args.device)
     logger.info(f"SpikeVPR descriptors: {args.hdf5_path} -> {args.out} (device={device})")
 
-    kwargs = {"dt_ms": args.dt_ms, "hot_pixel_filter": args.hot_pixel_filter,
-              "sensor_size": sensor_size}
-    if args.offset is not None:
-        kwargs["offset"] = args.offset
-    reader = ecv.open(args.hdf5_path, **kwargs)
+    reader = open_reader(args.hdf5_path, args.dt_ms, args.offset, sensor_size)
     n_slices = int(reader.n_slices)
-    logger.info(f"{n_slices} slices at dt_ms={args.dt_ms}, event_count={args.event_count}")
+    logger.info(f"{n_slices} slices at dt_ms={args.dt_ms}")
 
     model = build_model(args.repo_path, args.checkpoint, args.encoder, args.neuron_type,
                         args.out_channels, args.out_rows, device)
@@ -141,10 +112,14 @@ def main():
         for start in range(0, n_slices, args.batch_size):
             end = min(start + args.batch_size, n_slices)
             batch = np.stack([
-                render_frame(reader.slice(i), sensor_size, args.event_count, args.channel_order)
+                channels(reader.slice(i), 2)
                 for i in range(start, end)
             ])
+            if args.channel_order == 'off_on':
+                batch = batch[:, ::-1].copy()
             x = torch.from_numpy(batch).to(device)
+            # The released MixVPR head has a fixed spatial input.
+            x = torch.nn.functional.interpolate(x, size=(260, 346), mode='bilinear', align_corners=False)
             descriptors.append(model(x).float().cpu().numpy())
             if start % (args.batch_size * 20) == 0:
                 logger.info(f"  {end}/{n_slices}")

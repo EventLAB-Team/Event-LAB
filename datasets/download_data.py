@@ -1,120 +1,73 @@
-# datasets/data_utils.py
-import os, requests, time
+"""Resumable downloads; a final filename denotes a completed transfer."""
+import os
+import time
+import requests
 from tqdm import tqdm
 
-def download_sequence_data(config, data_config, dataset_name, sequence_name):
-    # Get the URL for the sequence data
-    sequence_url = data_config['sequences'][sequence_name]['data']['url']
-    # Validate the URL
-    size = check_download_size(sequence_url)
-    # Check with the user if they want to download the dataset
-    if config['request_input']:
-        user_response = input(f"Download the sequence data ({int(size/(1024*1024*1024))}GB)? (yes / press Enter to confirm): ").strip().lower()
-        if user_response not in ('', 'yes'):
-            raise Exception("Download cancelled by user.")
-    
-    # Create directory if they do not exist
-    os.makedirs(os.path.join(config['data_path'], dataset_name, sequence_name), exist_ok=True)
-    
-    # Use sequence name with correct format from config
-    file_format = data_config['format']['data']['format']
-    filename = f"{sequence_name}.{file_format}"
-    
-    # Full file path
-    file_path = os.path.join(config['data_path'], dataset_name, sequence_name, filename)
-    
-    # Download with resume capability and retry logic
-    max_retries = 5
-    
-    for attempt in range(max_retries):
-        try:
-            # Check if file already exists (partial download)
-            resume_pos = 0
-            if os.path.exists(file_path):
-                resume_pos = os.path.getsize(file_path)
-                if resume_pos == size:
-                    print(f"File already completely downloaded: {file_path}")
-                    return
-                elif resume_pos > 0:
-                    print(f"Resuming download from {resume_pos / (1024*1024):.1f}MB")
-            
-            # Set up headers for resume
-            headers = {}
-            if resume_pos > 0:
-                headers['Range'] = f'bytes={resume_pos}-'
-            
-            # Make the actual HTTP GET request
-            headers = {
-                "User-Agent": (
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
-                ),
-                "Referer": "https://deepblue.lib.umich.edu/",
-                "Accept": "*/*",
-            }
 
-            http_response = requests.get(sequence_url, headers=headers, stream=True)
-            http_response.raise_for_status()
-            
-            # Open file in appropriate mode
-            mode = 'ab' if resume_pos > 0 else 'wb'
-            
-            with open(file_path, mode) as file, tqdm(
-                desc=f"Download sequence data = {sequence_name}",
-                total=size,
-                initial=resume_pos,
-                unit='B',
-                unit_scale=True,
-                unit_divisor=1024,
-            ) as pbar:
-                for chunk in http_response.iter_content(chunk_size=8192):
-                    if chunk:  # Filter out keep-alive chunks
-                        file.write(chunk)
-                        pbar.update(len(chunk))
-            
-            print(f"✓ Download completed: {file_path}")
-            return  # Success, exit retry loop
-            
-        except (requests.exceptions.RequestException, 
-                requests.exceptions.ChunkedEncodingError,
-                requests.exceptions.ConnectionError) as e:
-            
-            print(f"Download failed on attempt {attempt + 1}: {e}")
-            
-            if attempt < max_retries - 1:
-                wait_time = 2 ** attempt  # Exponential backoff: 1, 2, 4, 8 seconds
-                print(f"Retrying in {wait_time} seconds...")
-                time.sleep(wait_time)
-            else:
-                print(f"Download failed after {max_retries} attempts")
-                # Clean up partial download if it's corrupted
-                if os.path.exists(file_path):
-                    current_size = os.path.getsize(file_path)
-                    print(f"Partial file size: {current_size / (1024*1024):.1f}MB")
-                    print("You can retry the download to resume from this point")
-                raise
-        
-        except KeyboardInterrupt:
-            print("\nDownload interrupted by user.")
-            current_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
-            print(f"Partial file saved: {current_size / (1024*1024):.1f}MB")
-            print("You can restart the download to resume from this point")
-            raise
-
-def check_download_size(sequence_url):
+def check_download_size(url):
     try:
-        response = requests.head(sequence_url, allow_redirects=True, timeout=30)
-        response.raise_for_status()
-        
-        # Get the Content-Length header
-        size_header = response.headers.get('Content-Length')
-        if size_header:
-            return int(size_header)
-        else:
-            print("Warning: Server did not provide file size")
-            return None
-        
-    except requests.RequestException as e:
-        print(f"Error checking file size: {e}")
+        with requests.head(url, allow_redirects=True, timeout=30) as response:
+            response.raise_for_status()
+            value = response.headers.get('Content-Length')
+            return int(value) if value is not None else None
+    except requests.RequestException:
         return None
+
+
+def download_file(url, destination, *, request_input=False, request_headers=None):
+    if os.path.exists(destination) and os.path.getsize(destination) > 0:
+        return
+    if not url:
+        raise ValueError(f'No download URL configured for {destination}; stage this local dataset first.')
+    size = check_download_size(url)
+    if request_input:
+        description = f'{size / 1024**3:.2f} GB' if size is not None else 'size unknown'
+        answer = input(f'Download {destination} ({description})? [Y/n] ').strip().lower()
+        if answer not in ('', 'y', 'yes'):
+            raise RuntimeError('Download cancelled')
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    partial = destination + '.part'
+    for attempt in range(5):
+        offset = os.path.getsize(partial) if os.path.exists(partial) else 0
+        if size is not None and offset == size:
+            os.replace(partial, destination)
+            return
+        if size is not None and offset > size:
+            os.unlink(partial)
+            offset = 0
+        headers = dict(request_headers or {
+            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'https://deepblue.lib.umich.edu/', 'Accept': '*/*',
+        })
+        if offset:
+            headers['Range'] = f'bytes={offset}-'
+        try:
+            with requests.get(url, headers=headers, stream=True, timeout=(30, 300)) as response:
+                response.raise_for_status()
+                if offset and response.status_code != 206:
+                    offset = 0
+                if offset and not response.headers.get('Content-Range', '').startswith(f'bytes {offset}-'):
+                    raise IOError('Invalid Content-Range in resumed response')
+                with open(partial, 'ab' if offset else 'wb') as handle, tqdm(
+                    desc=os.path.basename(destination), total=size, initial=offset,
+                    unit='B', unit_scale=True) as progress:
+                    for chunk in response.iter_content(chunk_size=1024 * 1024):
+                        if chunk:
+                            handle.write(chunk)
+                            progress.update(len(chunk))
+            if size is not None and os.path.getsize(partial) != size:
+                raise IOError(f'Incomplete download: {destination}')
+            os.replace(partial, destination)
+            return
+        except (requests.RequestException, IOError):
+            if attempt == 4:
+                raise
+            time.sleep(2 ** attempt)
+
+
+def download_sequence_data(config, data_config, dataset_name, sequence_name):
+    destination = os.path.join(config['data_path'], dataset_name, sequence_name,
+                               f"{sequence_name}.{data_config['format']['data']['format']}")
+    download_file(data_config['sequences'][sequence_name]['data']['url'], destination,
+                  request_input=config.get('request_input', False))

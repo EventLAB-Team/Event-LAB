@@ -1,3 +1,5 @@
+from utils.representations import representation_tag
+from utils.configuration import baseline_config_path
 import os
 import shutil
 import subprocess
@@ -10,7 +12,7 @@ import yaml
 from loguru import logger
 
 from baselines.EventBaselineLab import EventBaseline
-from baselines.download_baseline import clone_repo
+from utils.preparation import prepare_baseline
 from utils.eventcv_frames import (offsets_from_dataset_config, render_png_sequence,
                                   write_frame_sidecars)
 
@@ -21,17 +23,11 @@ class ensemble_baseline(EventBaseline):
         self.name = "ensemble"
         self.repo_path = "./baselines/ensemble"
         self.url = "https://github.com/AdamDHines/ensemble-event-vpr.git"
-        if not os.path.exists(self.repo_path):
-            clone_repo(self.url, destination=self.repo_path)
+        prepare_baseline('ensemble')
 
-        self.baseline_config_path = './baselines/ensemble.yaml'
+        self.baseline_config_path = baseline_config_path('ensemble')
         with open(self.baseline_config_path, 'r') as file:
             self.baseline_config = yaml.safe_load(file)
-
-        # run_eevpr.py does `sys.path.append(netvlad_folder); from netvlad import NetVLAD`
-        if not os.path.exists(self.baseline_config['netvlad_path']):
-            clone_repo("https://github.com/Nanne/pytorch-NetVlad.git",
-                       destination=self.baseline_config['netvlad_path'])
 
         self.outdir = './output/ensemble'
         os.makedirs(self.outdir, exist_ok=True)
@@ -52,19 +48,7 @@ class ensemble_baseline(EventBaseline):
         """
         self.config = config
         self.dataset = dataset_config['dataset']['name']
-        self.frames_subfolder = config['frame_generator']
-
-        if config['frame_generator'] == 'reconstruction':
-            raise NotImplementedError(
-                "ensemble no longer builds E2VID reconstructions: the frame-generation "
-                "pipeline was retired in the EventCV migration (commit 22e0fd2). Set "
-                "frame_generator: frames in config.yaml to render event frames with "
-                "EventCV instead.")
-        if config['frame_accumulator'] == 'eventcount':
-            raise NotImplementedError(
-                "ensemble requires fixed-duration windows: run_eevpr.py aligns traverses "
-                "against --window_duration and raises without one. Set "
-                "frame_accumulator: polarity in config.yaml.")
+        self.frames_subfolder = representation_tag(config)
 
         ref_info = reference.get_dataset_info()
         query_info = query.get_dataset_info()
@@ -77,7 +61,6 @@ class ensemble_baseline(EventBaseline):
 
         resolution = tuple(dataset_config['dataset']['resolution'])  # (W, H)
         min_gap_sec = float(config.get("filter_places_sec", 0))
-        representation = self.baseline_config.get('representation', 'redblue')
         ref_offset, qry_offset = offsets_from_dataset_config(
             dataset_config, self.ref_name, self.query_name)
 
@@ -94,7 +77,7 @@ class ensemble_baseline(EventBaseline):
                 times_s = render_png_sequence(
                     hdf5_path, frames_dir,
                     timewindow_ms=window, offset_ms=offset,
-                    sensor_size=resolution, representation=representation,
+                    sensor_size=resolution, config=config,
                     min_gap_sec=min_gap_sec)
                 write_frame_sidecars(
                     frames_dir, times_s,
@@ -106,7 +89,7 @@ class ensemble_baseline(EventBaseline):
             self.outdir,
             f"{ref_info['dataset_name']}",
             f"{self.ref_name}_{self.query_name}",
-            f"{config['frame_generator']}_{timewindow}",
+            f"{representation_tag(config)}_{timewindow}",
         )
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -159,8 +142,7 @@ class ensemble_baseline(EventBaseline):
             self.name,
             f'{self.ref_name}_{self.query_name}',
             matrix_type=self.matrix_type,
-            outdir=self.output_dir,
-            tolerance=self.config.get('ground_truth_tolerance', 0.0)
+            outdir=self.output_dir
         )
         self.save_results(rows, pr_curves, self.name, f'{self.ref_name}_{self.query_name}')
 

@@ -1,48 +1,44 @@
 # General configuration for Event-Lab
 
-data_path: "./datasets" # Path to the datasets directory
-std_format: "hdf5" # Default format for datasets
-max_frames:       # Maximum frames to generate (null = all)
-chunk_size: 100000  # Events to process at once (memory efficiency)
-stream: False # Whether to process datasets in a streaming manner (memory efficiency)
+data_path: "/media/adam/vprdatasets/eventgem" # Path to the datasets directory
 
 # Processing options
 request_input: false # Request input from the user for dataset download
-gps_tolerance: 10 # Tolerance to build the pseudo ground truth (in no. places)
-ground_truth_tolerance: 70 # Distance in metres to build the ground truth tolerance
-filter_places_sec: 0 # Filter places to be at least this far apart in time (in seconds)
+gps_tolerance: 25.0 # Ground truth tolerance in metres along the reference route
+filter_places_sec: 0 # Minimum separation in seconds for image-folder adapters
 
-# Frame reconstruction parameters
-timewindows: [1000] # Int value in msec
-num_events: [100000] # Max events per frame, only used if frame_generator is "event_count"
-frame_generator: "frames" # Options: "frames" "reconstruction"
-frame_accumulator: "polarity"    # Options: "eventcount", "polarity"
-reconstruction_model: "e2vid"  # Options: "firenet", "e2vid (default)"
+# EventCV streams recordings on demand; no persistent frame cache is built.
+timewindows: [50] # Window durations in milliseconds
+representation: "polarity" # EventCV representation; reconstruction is unavailable for now
+# Parameter documentation: https://docs.eventcv.net/en/latest/api.html#eventcv.EventReader.with_repr
+representation_options: {} # EventCV reader.with_repr() parameters; {} uses defaults
+hot_pixel_filter: true
+reconstruction: {} # Disabled until EventCV supports named reconstruction methods
 
 # Available baselines
 VPR-Baselines:
-  - "lens"
-  - "sparse_event"
-  - "ensemble"
-  - "eventvlad"
-  - "vprmethods"
-  - "spikevpr"
-  - "megaevent"
-  - "eventgem"
+- "lens"
+- "sparse_event"
+- "ensemble"
+- "eventvlad"
+- "vprmethods"
+- "spikevpr"
+- "megaevent"
+- "eventgem"
 
-# Dataset configuration file to download and pre-process datasets for Event-Lab
+# Dataset recordings to download for Event-LAB
 datasets:
-  - name: "brisbane_event"
-    sequences:
-      - "sunset2"
-      - "sunrise"
+- name: "brisbane_event"
+  sequences:
+  - "sunset2"
+  - "sunrise"
 
-  - name: "nsavp"
-    sequences:
-      - "R0_FA0"
-      - "R0_FS0"
+- name: "nsavp"
+  sequences:
+  - "R0_FA0"
+  - "R0_FS0"
 
-  - name: "qut_event_walking"
-    sequences:
-      - "left"
-      - "right"
+- name: "gardens_point_event"
+  sequences:
+  - "left"
+  - "right"

@@ -1,0 +1,31 @@
+# Public recordings and camera-aligned GPS; recordings are HDF5 despite the .h5 URL.
+dataset:
+  name: gardens_point_event
+  version: 1.0.0
+  description: 'Gardens Point Event: left/right walking traverses with viewpoint shift'
+  base_url: https://huggingface.co/datasets/AdamHines/Gardens-Point-Event
+  camera: davis346
+  resolution:
+  - 346
+  - 260
+sequences:
+  left:
+    data:
+      url: https://huggingface.co/datasets/AdamHines/Gardens-Point-Event/resolve/main/left/events.h5
+    ground_truth:
+      available: true
+      url: https://huggingface.co/datasets/AdamHines/Gardens-Point-Event/resolve/main/left/derived/gps_interp.csv
+      sync_url: https://huggingface.co/datasets/AdamHines/Gardens-Point-Event/resolve/main/left/derived/sync.json
+  right:
+    data:
+      url: https://huggingface.co/datasets/AdamHines/Gardens-Point-Event/resolve/main/right/events.h5
+    ground_truth:
+      available: true
+      url: https://huggingface.co/datasets/AdamHines/Gardens-Point-Event/resolve/main/right/derived/gps_interp.csv
+      sync_url: https://huggingface.co/datasets/AdamHines/Gardens-Point-Event/resolve/main/right/derived/sync.json
+format:
+  data:
+    format: hdf5
+    timestamp_val: us
+    time_scale: 1.0e-06
+  ground_truth: csv

@@ -27,3 +27,9 @@ logs/
 .vscode/
 utils/__pycache__/
 *.DS_Store
+# Terminal interface tests and Python entry points
+/__pycache__/
+/tests/__pycache__/
+/.pytest_cache/
+
+/datasets/gardens_point_event/

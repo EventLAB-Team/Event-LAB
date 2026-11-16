@@ -1,3 +1,5 @@
+from utils.representations import representation_tag
+from utils.configuration import baseline_config_path
 import os
 import shutil
 from datetime import datetime, timezone
@@ -8,7 +10,7 @@ import yaml
 from loguru import logger
 
 from baselines.EventBaselineLab import EventBaseline
-from baselines.download_baseline import clone_repo
+from utils.preparation import prepare_baseline
 from utils.utils import convert_offset, pixi_run
 
 
@@ -18,10 +20,9 @@ class megaevent_baseline(EventBaseline):
         self.name = "megaevent"
         self.repo_path = "./baselines/megaevent"
         self.url = "https://github.com/AdamDHines/megaevent.git"
-        if not os.path.exists(self.repo_path):
-            clone_repo(self.url, destination=self.repo_path)
+        prepare_baseline('megaevent')
 
-        self.baseline_config_path = './baselines/megaevent.yaml'
+        self.baseline_config_path = baseline_config_path('megaevent')
         with open(self.baseline_config_path, 'r') as file:
             self.baseline_config = yaml.safe_load(file)
 
@@ -59,7 +60,7 @@ class megaevent_baseline(EventBaseline):
             self.outdir,
             f"{ref_info['dataset_name']}",
             f"{self.ref_name}_{self.query_name}",
-            f"{config['frame_generator']}_{timewindow}",
+            f"{representation_tag(config)}_{timewindow}",
         )
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -70,7 +71,7 @@ class megaevent_baseline(EventBaseline):
 
     def _descriptor_path(self, sequence, offset):
         cfg = self.baseline_config
-        tag = f"{sequence}-{cfg['model']}-{self.timewindow}ms"
+        tag = f"{sequence}-{cfg['model']}-{self.timewindow}ms-{representation_tag(self.config)}"
         if offset is not None:
             tag += f"-off{int(offset)}"
         return os.path.join(self.descriptor_dir, f"{tag}.npy")
@@ -87,8 +88,6 @@ class megaevent_baseline(EventBaseline):
         )
         if offset is not None:
             cmd += f" --offset {offset}"
-        if not cfg.get('eventcv_redblue', True):
-            cmd += " --no-eventcv-redblue"
         return cmd
 
     def build_execute(self, config, data_config, ground_truth):
@@ -151,8 +150,7 @@ class megaevent_baseline(EventBaseline):
             self.name,
             f'{self.ref_name}_{self.query_name}',
             matrix_type=self.matrix_type,
-            outdir=self.output_dir,
-            tolerance=self.config.get('ground_truth_tolerance', 0.0)
+            outdir=self.output_dir
         )
         self.save_results(rows, pr_curves, self.name, f'{self.ref_name}_{self.query_name}')
 

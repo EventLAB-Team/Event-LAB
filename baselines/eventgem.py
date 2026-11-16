@@ -1,3 +1,5 @@
+from utils.representations import representation_tag
+from utils.configuration import baseline_config_path
 import os
 import shutil
 import subprocess
@@ -9,14 +11,8 @@ import yaml
 from loguru import logger
 
 from baselines.EventBaselineLab import EventBaseline
-from baselines.download_baseline import clone_repo
+from utils.preparation import prepare_baseline
 from utils.utils import convert_offset, pixi_run
-
-# superevent carries the trunk weights; vprtutorial supplies recallAtK, which
-# eventgem/analysis.py imports at module load. eventlab is deliberately omitted:
-# it pins an ancient Event-LAB revision and would clone Event-LAB inside itself.
-_SUBMODULES = ["eventgem/external/superevent", "eventgem/external/vprtutorial"]
-
 
 class eventgem_baseline(EventBaseline):
     def __init__(self):
@@ -24,11 +20,9 @@ class eventgem_baseline(EventBaseline):
         self.name = "eventgem"
         self.repo_path = "./baselines/Event-GeM"
         self.url = "https://github.com/AdamDHines/Event-GeM.git"
-        if not os.path.exists(self.repo_path):
-            clone_repo(self.url, destination=self.repo_path)
-        self._init_submodules()
+        prepare_baseline('eventgem')
 
-        self.baseline_config_path = './baselines/eventgem.yaml'
+        self.baseline_config_path = baseline_config_path('eventgem')
         with open(self.baseline_config_path, 'r') as file:
             self.baseline_config = yaml.safe_load(file)
 
@@ -38,24 +32,6 @@ class eventgem_baseline(EventBaseline):
         # feature_extraction.py does sim.neg_().add_(1.0), and re-ranked values
         # go negative as inliers are subtracted. Lower is better.
         self.matrix_type = 'distance'
-
-    def _init_submodules(self):
-        """
-        Check out only the submodules the default path needs.
-
-        clone_repo() runs a plain `git clone`, and --recursive is not an option
-        here: SuperEvent nests a SuperGlue submodule behind an ssh:// URL that
-        fails without keys. The SuperEvent trunk weights arrive with this step --
-        there is no download code for them anywhere.
-        """
-        missing = [m for m in _SUBMODULES
-                   if not os.path.isdir(os.path.join(self.repo_path, m))
-                   or not os.listdir(os.path.join(self.repo_path, m))]
-        if not missing:
-            return
-        logger.info(f"Initialising Event-GeM submodules: {missing}")
-        subprocess.run(["git", "-C", self.repo_path, "submodule", "update", "--init"] + missing,
-                       check=True)
 
     def format_data(self, config, dataset_config, reference, query, timewindow):
         """
@@ -87,7 +63,7 @@ class eventgem_baseline(EventBaseline):
             self.outdir,
             f"{ref_info['dataset_name']}",
             f"{self.ref_name}_{self.query_name}",
-            f"{config['frame_generator']}_{timewindow}",
+            f"{representation_tag(config)}_{timewindow}",
         )
         os.makedirs(self.output_dir, exist_ok=True)
 
@@ -99,9 +75,9 @@ class eventgem_baseline(EventBaseline):
         # (feature_extraction.py:296-299), so without this the second timewindow
         # of an Event-LAB sweep would silently reuse the first one's features.
         self.feature_out = os.path.join(
-            os.path.abspath(self.outdir), "features", f"{config['frame_generator']}_{timewindow}")
+            os.path.abspath(self.outdir), "features", f"{representation_tag(config)}_{timewindow}")
         self.keypoint_out = os.path.join(
-            os.path.abspath(self.outdir), "keypoints", f"{config['frame_generator']}_{timewindow}")
+            os.path.abspath(self.outdir), "keypoints", f"{representation_tag(config)}_{timewindow}")
 
         # Where upstream writes its two matrices (main.py:116-118).
         self.similarity_dir = os.path.join(
@@ -181,8 +157,7 @@ class eventgem_baseline(EventBaseline):
             self.name,
             f'{self.ref_name}_{self.query_name}',
             matrix_type=self.matrix_type,
-            outdir=self.output_dir,
-            tolerance=self.config.get('ground_truth_tolerance', 0.0)
+            outdir=self.output_dir
         )
         self.save_results(rows, pr_curves, self.name, f'{self.ref_name}_{self.query_name}')
 

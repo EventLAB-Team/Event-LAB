@@ -11,6 +11,10 @@ def start(method, dataset):
     logger.add(sys.stdout, colorize=True, format="<green>{time:%Y-%m-%d %H:%M:%S}</green> {message}", level="INFO")
     logger.add(f"{logpath}/{time.strftime('%Y-%m-%d_%H-%M-%S')}_{method}_{dataset}.log")
 
+    if os.environ.get('EVENTLAB_TUI') == '1':
+        logger.info(f'Event-LAB · {method} · {dataset}')
+        return
+
     logger.info('')
     logger.info('███████╗██╗   ██╗███████╗███╗   ██╗████████╗   ██╗      █████╗ ██████╗') 
     logger.info('██╔════╝██║   ██║██╔════╝████╗  ██║╚══██╔══╝   ██║     ██╔══██╗██╔══██╗')

@@ -1,3 +1,9 @@
+import sys
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
 import os
 # Let unsupported ops fall back to CPU when running on Apple MPS.
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")
@@ -7,15 +13,11 @@ import numpy as np
 import cv2
 import torch
 import matplotlib.pyplot as plt
-import sys
-from pathlib import Path
 from loguru import logger
 from tqdm import tqdm
-sys.path.append('./baselines/EventVLAD')
+sys.path.append(str(PROJECT_ROOT / 'baselines' / 'EventVLAD'))
 from networks import EventDenoiser  # add other models in build_model if needed
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT_ROOT))
-import eventcv as ecv
+from utils.representations import open_reader
 
 
 # ----------------- Device -----------------
@@ -72,14 +74,6 @@ def load_checkpoint_into_model(model, ckpt_path, device):
 
 
 # ----------------- EventCV stream -----------------
-def open_event_reader(hdf5_path, dt_ms, offset, repr_name, hot_pixel_filter):
-    """Open an EventCV reader with fixed-duration framing (dt_ms) and a chosen representation."""
-    kwargs = {"dt_ms": dt_ms, "repr": repr_name, "hot_pixel_filter": hot_pixel_filter}
-    if offset is not None:
-        kwargs["offset"] = offset
-    return ecv.open(hdf5_path, **kwargs)
-
-
 def _to_numpy(x):
     """Coerce an EventCV/torch batch result into a NumPy array."""
     if torch.is_tensor(x):
@@ -196,9 +190,6 @@ def main():
     ap.add_argument("--hdf5_path", required=True, help="Path to the formatted event HDF5 recording")
     ap.add_argument("--dt_ms", type=float, required=True, help="Fixed frame duration (timewindow) in ms")
     ap.add_argument("--offset", type=float, default=None, help="Framing origin offset in ms")
-    ap.add_argument("--repr", default="count", help="EventCV representation to render (e.g. count)")
-    ap.add_argument("--hot_pixel_filter", action=argparse.BooleanOptionalAction, default=True,
-                    help="Apply EventCV hot-pixel filtering")
     ap.add_argument("--batch_size", type=int, default=512, help="Number of slices rendered per reader.batch() call")
     ap.add_argument("--model_path", required=True, help="Path to model checkpoint")
     ap.add_argument("--model_type", default="event_denoiser", help="Model type (e.g., event_denoiser)")
@@ -243,12 +234,10 @@ def main():
 
     # Open the EventCV stream directly instead of loading frames from disk.
     logger.info(f"Opening EventCV stream: {args.hdf5_path} (dt_ms={args.dt_ms}, offset={args.offset})")
-    reader = open_event_reader(
+    reader = open_reader(
         args.hdf5_path,
-        dt_ms=args.dt_ms,
-        offset=args.offset,
-        repr_name=args.repr,
-        hot_pixel_filter=args.hot_pixel_filter,
+        timewindow_ms=args.dt_ms,
+        offset_ms=args.offset,
     )
     n_slices = int(reader.n_slices)
 

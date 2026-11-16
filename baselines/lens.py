@@ -1,3 +1,5 @@
+from utils.representations import representation_tag
+from utils.configuration import baseline_config_path
 import os, tempfile, subprocess, csv, yaml
 import numpy as np
 
@@ -6,11 +8,11 @@ from tqdm import tqdm
 from pathlib import Path
 from loguru import logger
 from baselines.EventBaselineLab import EventBaseline
-from baselines.download_baseline import clone_repo
+from utils.preparation import prepare_baseline
 from datetime import datetime, timezone
 from utils.utils import convert_offset
 from utils.eventcv_frames import kept_place_indices
-import eventcv as ecv
+from utils.representations import open_reader, image_uint8
 
 class LENS_baseline(EventBaseline):
     def __init__(self):
@@ -21,9 +23,8 @@ class LENS_baseline(EventBaseline):
         self.repo_path = "./baselines/LENS"
         # Baseline URL
         self.url = "https://github.com/AdamDHines/LENS.git"
-        if not os.path.exists(self.repo_path):
-            clone_repo(self.url, destination=self.repo_path)
-        self.lens_config_path = './baselines/lens.yaml'
+        prepare_baseline('lens')
+        self.lens_config_path = baseline_config_path('lens')
         # Load the LENS configuration
         with open(self.lens_config_path, 'r') as file:
             self.lens_config = yaml.safe_load(file)
@@ -32,22 +33,12 @@ class LENS_baseline(EventBaseline):
         os.makedirs(self.outdir, exist_ok=True)
         self.matrix_type = 'similarity' # options are 'similarity' or 'distance'
 
-    @staticmethod
-    def _open_reader(hdf5_path, timewindow, offset):
-        """Open an EventCV count-frame stream with hot-pixel filtering."""
-        kwargs = {"dt_ms": timewindow, "repr": "count", "hot_pixel_filter": True}
-        if offset is not None:
-            kwargs["offset"] = offset
-        return ecv.open(hdf5_path, **kwargs)
+    def _open_reader(self, hdf5_path, timewindow, offset):
+        return open_reader(hdf5_path, timewindow, offset, config=self.config)
 
     @staticmethod
     def _frame_to_uint8(frame):
-        """Collapse a single [C,H,W] (or [H,W]) count frame to a uint8 image."""
-        frame = np.asarray(frame)
-        if frame.ndim == 3:
-            # EventCV yields channel-first frames; sum polarity/count channels.
-            frame = frame.sum(axis=0)
-        return np.clip(frame, 0, 255).astype(np.uint8)
+        return image_uint8(frame, 1)[0]
 
     def _write_lens_sequence(self, reader, timewindow, min_gap_sec, out_dir, csv_path, desc,
                              batch_size=64):
@@ -90,8 +81,7 @@ class LENS_baseline(EventBaseline):
         Format the reference and query data for LENS baseline.
 
         LENS expects image folders plus CSV manifests. Frames are now streamed
-        directly from the EventCV recording (fixed dt_ms count frames, hot-pixel
-        filtered) and thinned to distinct places, materializing only the PNGs the
+        directly from the selected EventCV representation and thinned to distinct places, materializing only the PNGs the
         external LENS dataloader needs.
         """
         self.config = config
@@ -102,10 +92,8 @@ class LENS_baseline(EventBaseline):
         query_seq = query_info['sequence_name']
         # Resolve the timewindow-tagged sequence names LENS uses for its temp
         # folders, CSV manifests, model filenames and output paths.
-        self.ref_key = [d for d in ref_info['file_path'] if ref_seq in d and str(timewindow) in d]
-        self.query_key = [d for d in query_info['file_path'] if query_seq in d and str(timewindow) in d]
-        self.ref_name = self.ref_key[0]
-        self.query_name = self.query_key[0]
+        self.ref_name = f'{ref_seq}-{representation_tag(config)}-{timewindow}'
+        self.query_name = f'{query_seq}-{representation_tag(config)}-{timewindow}'
 
         # Offsets (consistent with the other EventCV baselines).
         if "other" in dataset_config and "offset" in dataset_config["other"]:
@@ -116,7 +104,7 @@ class LENS_baseline(EventBaseline):
         else:
             ref_offset, qry_offset = None, None
 
-        min_gap_sec = float(config.get("filter_places_sec", 60))
+        min_gap_sec = float(config.get("filter_places_sec", 0))
 
         # Open EventCV streams directly instead of loading frames from disk.
         ref_reader = self._open_reader(ref_info['hdf5_path'], timewindow, ref_offset)
@@ -150,7 +138,7 @@ class LENS_baseline(EventBaseline):
         )
 
         self.output_dir = os.path.join(self.outdir, f"{ref_info['dataset_name']}", f"{ref_info['sequence_name']}_{query_info['sequence_name']}",
-                                       f"{config['frame_generator']}_{timewindow}")
+                                       f"{representation_tag(config)}_{timewindow}")
         os.makedirs(self.output_dir, exist_ok=True)
 
     def build_execute(self, config, data_config, ground_truth):
@@ -257,8 +245,7 @@ class LENS_baseline(EventBaseline):
                 self.name,
                 f'{self.ref_name}_{self.query_name}',
                 matrix_type=self.matrix_type,
-                outdir=self.output_dir,
-                tolerance=self.config['ground_truth_tolerance']
+                outdir=self.output_dir
         )
 
         # Save results to excel spreadsheet

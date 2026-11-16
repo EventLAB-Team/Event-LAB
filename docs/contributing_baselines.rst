@@ -29,8 +29,8 @@ Wrapper methods
     whatever the method consumes, and create the baseline output directory.
 
     Events are read through EventCV, never from pre-rendered frame directories:
-    ``reference.get_dataset_info()['hdf5_path']`` is the formatted recording, and
-    ``ecv.open(path, dt_ms=timewindow, offset=..., repr=...)`` streams it without
+    ``reference.get_dataset_info()['hdf5_path']`` is the source recording, and
+    ``utils.representations.open_reader(path, timewindow, config=config)`` streams it without
     materialising it. Use ``utils.eventcv_frames.offsets_from_dataset_config`` to
     resolve the per-sequence stream offsets, and, when the method needs images on
     disk, ``utils.eventcv_frames.render_png_sequence``.
@@ -61,7 +61,7 @@ The common output directory pattern is:
 
 .. code-block:: text
 
-   output/<baseline>/<dataset>/<reference>_<query>/<frame_generator>_<timewindow>/
+   output/<baseline>/<dataset>/<reference>_<query>/<representation>-<settings-hash>_<timewindow>/
 
 Keep the saved matrix names simple, for example ``distance_matrix.npy``.
 

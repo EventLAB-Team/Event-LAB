@@ -5,7 +5,6 @@ import numpy as np
 
 from utils.metrics import (aupr, best_match_rows, conform_ground_truth,
                            precision_recall_curve, recall_at_k, resolve_workers)
-from datasets.groundtruths import create_GTtol_by_distance
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -124,7 +123,7 @@ class EventBaseline:
         self.K_list = [1, 5, 10, 15, 20, 25]
 
     def run_metrics(self, all_names, all_arrays, GThard, timestamp, run_name, ref_query,
-                    matrix_type="distance", outdir=None, tolerance=0, tie_policy="optimistic"):
+                    matrix_type="distance", outdir=None, tie_policy="optimistic"):
         """
         Score each result matrix and return (rows, pr_curves).
 
@@ -217,6 +216,13 @@ class EventBaseline:
         import os, re, time
         from datetime import datetime, timezone
         import openpyxl
+
+        # Keep experiments with different representations/settings out of one aggregate.
+        if hasattr(self, 'config'):
+            from utils.representations import representation_tag
+            tag = representation_tag(self.config)
+            run_name = f"{run_name} · {tag}"
+            rows = [dict(row, run_name=f"{row['run_name']} · {tag}") for row in rows]
 
         # ---------- paths ----------
         excel_path = "./output/eventlab_results.xlsx"
@@ -348,10 +354,11 @@ class EventBaseline:
         )
 
         def clean_label(label: str) -> str:
-            """Remove -frames-### / -reconstruction-### so timewindows aggregate."""
+            """Group time windows while retaining the run's representation/settings label."""
             if label is None:
                 return ""
-            return re.sub(r"-(?:frames|reconstruction)-\d+", "", str(label))
+            label = re.sub(r"-[a-z]+-[0-9a-f]{10}-\d+(?=_|$)", "", str(label))
+            return re.sub(r"-(?:frames|reconstruction)-\d+(?=_|$)", "", label)
 
         def update_agg_cell(ws, row_idx, hdr_map, base, new_val):
             """Welford (sample std) incremental update."""
@@ -461,4 +468,6 @@ class EventBaseline:
                 update_agg_cell(ws_sum, r_idx, hdr_sum, m, row.get(m))
 
         wb.save(excel_path)
+        from utils.results import save_details
+        save_details(self.output_dir, rows, pr_curves, self.matrix_type)
         logger.info(f"Saved Excel workbook to: {excel_path}")

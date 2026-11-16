@@ -1,16 +1,17 @@
+from utils.representations import representation_tag
+from utils.configuration import baseline_config_path
 import os, tempfile, subprocess, yaml
 import numpy as np
 from pathlib import Path
 from baselines.EventBaselineLab import EventBaseline
-from baselines.download_baseline import clone_repo
+from utils.preparation import prepare_baseline
 import prettytable
 import openpyxl
 from datetime import datetime, timezone
-import re, gdown, time
+import re, time
 import shutil 
 from loguru import logger
 from utils.utils import convert_offset
-import eventcv as ecv
 
 class eventvlad_baseline(EventBaseline):
     def __init__(self, config, dataset_config, reference, query):
@@ -30,14 +31,10 @@ class eventvlad_baseline(EventBaseline):
 
         # Baseline URL
         self.url = "https://github.com/alexjunholee/EventVLAD.git"
-        if not os.path.exists(self.repo_path):
-            clone_repo(self.url, destination=self.repo_path)
-            file_id = "1xdoGI7vmNelaR_D9-FUk5SbB3webqa5c" # Denoiser weights
-            out = "./baselines/EventVLAD/denoiser_brisbane"
-            gdown.download(id=file_id, output=out, quiet=False)
+        prepare_baseline('eventvlad')
 
         # Set the path to the baseline configuration file
-        self.baseline_config_path = './baselines/eventvlad.yaml'
+        self.baseline_config_path = baseline_config_path('eventvlad')
         
         # Set the type of matrix generated for evaluation (distance or similarity)
         self.matrix_type = 'distance'
@@ -46,32 +43,12 @@ class eventvlad_baseline(EventBaseline):
         with open(self.baseline_config_path, 'r') as file:
             self.baseline_config = yaml.safe_load(file)
 
-        # Check if the pytorch-NetVlad path exists
-        if not os.path.exists(self.baseline_config['netvlad_path']):
-            netvlad_url = "https://github.com/Nanne/pytorch-NetVlad.git"
-            clone_repo(netvlad_url, destination=self.baseline_config['netvlad_path'])
-        # Download the NetVLAD weights if not already present    
-        if not os.path.exists('./baselines/EventVLAD/vgg16_eventvlad.tar'):
-            logger.info("Downloading the eventvlad weights...")
-            # Get the eventvlad weights
-            file_id = "1rSIhH1pk8ADxfqYQXoos_hTuWyfiWSu3"
-            out = './baselines/EventVLAD/vgg16_eventvlad.tar'
-            gdown.download(id=file_id, output=out, quiet=False)
-
         # Create the data output folder
         self.outdir = './output/eventvlad'
         os.makedirs(self.outdir, exist_ok=True)
 
     def format_data(self, config, dataset_config, reference, query, timewindow):
-        """
-        Format the reference and query data for the EventVLAD baseline.
-
-        Frame loading is now storage-agnostic through:
-
-            
-        This supports the new frames.h5 storage system without manually listing
-        frame_*.npy files.
-        """
+        """Stream selected representations into temporary denoiser input/output."""
 
         self.config = config
         self.dataset_config = dataset_config
@@ -105,27 +82,17 @@ class eventvlad_baseline(EventBaseline):
         self.ref_hdf5_path = ref_info['hdf5_path']
         self.query_hdf5_path = query_info['hdf5_path']
 
-        # Denoised output directories used by build_execute/run.
-        self.ref_dir_out = os.path.join(
-            config["data_path"],
-            dataset_config["dataset"]["name"],
-            ref_name,
-            f"{ref_name}-frames-{timewindow}-denoised",
-        )
-
-        self.query_dir_out = os.path.join(
-            config["data_path"],
-            dataset_config["dataset"]["name"],
-            query_name,
-            f"{query_name}-frames-{timewindow}-denoised",
-        )
+        # Upstream needs image folders; keep them only for this run.
+        self.temp_dir = tempfile.mkdtemp(prefix="eventvlad_data_")
+        self.ref_dir_out = os.path.join(self.temp_dir, ref_name)
+        self.query_dir_out = os.path.join(self.temp_dir, query_name)
 
         # Main baseline output directory
         self.output_dir = os.path.join(
             self.outdir,
             f"{ref_info['dataset_name']}",
             f"{ref_info['sequence_name']}_{query_info['sequence_name']}",
-            f"{config['frame_generator']}_{timewindow}",
+            f"{representation_tag(config)}_{timewindow}",
         )
 
         os.makedirs(self.output_dir, exist_ok=True)
@@ -231,8 +198,7 @@ class eventvlad_baseline(EventBaseline):
                 self.name,
                 f'{self.ref_name}_{self.query_name}',
                 matrix_type=self.matrix_type,
-                outdir=self.output_dir,
-                tolerance=self.config.get('ground_truth_tolerance', 0.0)
+                outdir=self.output_dir
         )
 
         # Save results to excel spreadsheet

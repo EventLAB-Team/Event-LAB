@@ -52,6 +52,49 @@ pixi run demo
 ## Using Event-LAB
 Using simple command-line invocation, Event-LAB is designed to easily mix and match localization methods and datasets. To use Event-LAB, we simply run `pixi run eventlab <baseline_method> <dataset> <reference> <query>` in the command terminal. This triggers a series of processes starting from downloading the dataset and baseline, generating event frames, and then running the method to return Recall@1 and Precision-Recall metrics.
 
+### Terminal workbench
+
+Run `pixi run tui` for an EventCV-inspired terminal interface. Edit runtime and
+baseline configuration, select baselines/datasets with checkboxes, choose reference
+and query sequences, and save or run experiment batches. The Downloads screen
+prepares code, model weights, recordings, and ground truth without running inference.
+
+Start from Home: choose Run an experiment, Manage downloads, Edit configuration,
+View activity, or View results with arrows and Enter (or 1–5). Escape returns Home. Left/Right
+cycles between work panels; Tab reaches buttons. Space toggles selections,
+and A or the panel's Select all / Unselect all button toggles the whole list.
+For trajectories, Select all keeps one reference and makes the rest queries.
+Ctrl+S saves settings, and F5 reviews experiments. On the review dialog, Enter
+starts the queue; Escape or Tab → Enter goes back. The queue continues after failures and provides live logs
+and cancellation. Saved selections use current settings when the queue starts.
+
+Downloads groups recordings by dataset. Space or a click selects a whole dataset;
+Right opens its recordings for individual selection, and Left returns to the
+dataset list. All downloads start unchecked. Counts show available/total recordings. Green means complete, orange means partial,
+and red means missing. Availability follows saved `config.yaml`
+changes automatically; Check files refreshes it without selecting missing files.
+Before running or downloading a baseline, its external Git checkout is checked
+for upstream changes and updated by fast-forward. Required submodules follow the
+baseline's pinned revisions. Local changes and pinned checkouts are preserved;
+offline update checks use the existing checkout and report the failure in the log.
+
+View results browses saved matrices, precision–recall curves and Recall@K without
+rerunning evaluation. Choose an experiment, then select a view; Enter focuses its
+preview for scrolling. Open plot opens a full-size figure, and Refresh discovers
+new outputs. New evaluations save `results.json` beside their matrices. Older
+workbook metrics are shown only when they match one output unambiguously.
+
+You can also edit runtime settings directly, using their exact `config.yaml` names:
+
+```console
+pixi run config --timewindows 100 200 300
+pixi run config --request_input false
+pixi run config --help
+```
+
+Running `pixi run config` displays the configuration. See
+[configuration documentation](docs/config.rst) for batch and download details.
+
 ### Command-line invocation
 Below are some examples of experiments that we can run:
 ```console
@@ -62,19 +105,24 @@ pixi run eventlab sparse_event brisbane_event sunset2 sunrise
 pixi run eventlab ensemble nsavp R0_FS0 F0_FA0 
 ```
 
-Event-LAB will handle the pre-processing of all individual datasets, format as required for the baseline, and then return results into an `.xslx` spreadsheet for further analysis.
+Event-LAB downloads recordings, streams the selected representation through EventCV, and writes results to an `.xlsx` spreadsheet for further analysis.
 
 ### Modify the configuration
 Parameters for generating event frames in Event-LAB are controlled using the `config.yaml` file in the main project directory:
 ```yaml
-# Frame reconstruction parameters
-timewindows: [33, 66, 99, 120] # The time window to collect events over
-num_events: [25000, 50000, 75000, 100000] # The maximum number of events per frame, only used if frame_generator is "eventcount"
-frame_generator: "frames" # Options: "frames", "eventcount" ("reconstruction" is currently unavailable)
-frame_accumulator: "eventcount"    # Options: "count", "polarity" (default), "timestamp"
-reconstruction_model: "e2vid"  # Options: "firenet", "e2vid (default)"
+# EventCV streaming parameters
+timewindows: [33, 66, 99, 120] # Milliseconds
+representation: polarity
+representation_options: {} # EventCV reader.with_repr() parameters; {} uses defaults
+hot_pixel_filter: true
+gps_tolerance: 25.0 # Metres along the reference route
 ```
-Modify the parameters to suit your experimental needs. Time windows and maximum number of events can be parsed as a list to process and analyze several conditions in a single experiment.
+Every baseline uses the chosen EventCV representation. Recordings are streamed;
+image-only methods use temporary images that are deleted after the run. Model
+adapters average or repeat channels to fit pretrained inputs, so changing the
+representation can change accuracy. See the [EventCV representation parameters](https://docs.eventcv.net/en/latest/api.html#eventcv.EventReader.with_repr)
+for `representation_options`; these configure `reader.with_repr()`.
+Reconstruction is disabled until named methods are available in EventCV.
 
 ### Batch run experiments
 It is often required and useful to run a variety of baseline methods and datasets across a standardized set of parameters. Event-LAB allows users to easily set-up and batch numerous experiments to run in series. The `batch_config.yaml` file in the main project directory can be set up to customize implementations:
@@ -86,15 +134,14 @@ batch_experiments:
     queries: [sunrise]
     baselines: [eventvlad, ensemble]
     config:
-      frame_generator: frames
-      frame_accumulator: polarity
+      representation: polarity
       timewindows: [33, 66, 120, 250]
 ```
 The above will run 3 baseline methods across 4 different time windows. Then to run the evaluation we simply run the following in the command terminal:
 ```console
-pixi run bash
+pixi run batch
 ```
-This will generate a `run_batch.sh` file and execute it.
+This runs the batch sequentially, continues after failed experiments, and saves logs without rewriting your configuration files.
 
 ### Implemented baseline methods and datasets
 For the demonstration version of the repository, we have implemented two baseline methods and datasets. The full and final version of the code will be released upon acceptance which includes the other methods. Below is the list of implemented methods and their invocation name:
@@ -137,3 +184,22 @@ Where using baselines or datasets from other authors in your evaluation as imple
 
 ## Issues, bugs, and feature requests
 If you encounter problems whilst running the code or if you have a suggestion for a feature or improvement, please report it as an [issue](https://github.com/EventLAB-Team/Event-LAB/issues).
+
+### Gardens Point Event
+
+`gardens_point_event` provides the public `left` and `right` walking traverses:
+
+```console
+pixi run prepare dataset gardens_point_event left right
+pixi run eventlab eventvlad gardens_point_event left right
+```
+
+Recordings, GPS CSVs, and synchronization metadata come from
+[Gardens-Point-Event](https://huggingface.co/datasets/AdamHines/Gardens-Point-Event).
+GPS times are mapped onto the camera clock before ground-truth generation.
+The existing route-completion matching and tolerance rules apply. Incomplete GPS
+coverage produces a warning and retains the existing endpoint-clamping behavior.
+The local-only `qut_event_walking` name remains available to legacy scripts but is
+hidden from the TUI catalog. Cite the dataset's reference paper, *EventGeM:
+Global-to-Local Feature Matching for Event-Based Visual Place Recognition*,
+Hines et al., 2026 ([arXiv:2603.05807](https://arxiv.org/abs/2603.05807)).

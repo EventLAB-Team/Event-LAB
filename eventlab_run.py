@@ -1,19 +1,31 @@
 import os, sys, yaml
+import argparse
 
 from utils import utils
 from loguru import logger
 from datasets.get_data import get_dataset
 from baselines.get_baseline import get_baseline 
 from datasets.groundtruths import generate_ground_truth
+from utils.configuration import validate_runtime
 
 def main():
+    parser = argparse.ArgumentParser(description='Run an Event-LAB experiment')
+    for name in ('baseline', 'dataset', 'reference', 'query'):
+        parser.add_argument(name)
+    parser.add_argument('--config', default='config.yaml')
+    args = parser.parse_args()
     # Load the main configuration file
-    with open('config.yaml', 'r') as file:
+    with open(args.config, 'r') as file:
         config = yaml.safe_load(file)
+    validate_runtime(config)
+    os.environ['EVENTLAB_RUNTIME_CONFIG'] = os.path.abspath(args.config)
+    # Standalone adapters run from both the project and upstream directories.
+    root = os.path.dirname(os.path.abspath(__file__))
+    os.environ['PYTHONPATH'] = os.pathsep.join(filter(None, (root, os.environ.get('PYTHONPATH'))))
 
     # Get the experimental details
-    baseline_name = sys.argv[1]
-    dataset_name = sys.argv[2]
+    baseline_name = args.baseline
+    dataset_name = args.dataset
 
     # Start the Event-LAB banner
     utils.start(baseline_name, dataset_name)
@@ -26,8 +38,8 @@ def main():
     # Check the baseline argument if it is VPR or SLAM
     if baseline_name in config["VPR-Baselines"]:
         try:
-            reference_name = sys.argv[3]
-            query_name = sys.argv[4]
+            reference_name = args.reference
+            query_name = args.query
 
             # Print experimental details
             logger.info(f"Running VPR baseline: {baseline_name}")
@@ -36,24 +48,9 @@ def main():
             logger.info(f"Query sequence: {query_name}")
             logger.info('')
 
-            # Load general config and set the dataset (will download, format, and construct data if not present)
+            # Load general config and set the dataset (downloads recordings if not present)
             reference = get_dataset(config, dataset_name, reference_name)
             query = get_dataset(config, dataset_name, query_name)
-
-            # Check for the existence of a ground truth for the reference and query datasets
-            GT_file = (os.path.join(config['data_path'], dataset_name, 'ground_truth', f"{reference_name}_{query_name}_GT.npy"))
-            
-            # Generate ground truth
-            if not os.path.exists(GT_file):
-                generate_ground_truth(config, 
-                                    dataset_config, 
-                                    dataset_name, 
-                                    reference_name, 
-                                    query_name, 
-                                    reference, 
-                                    query,
-                                    timewindow=reference.timewindow_list[0],
-                                    gps_available=dataset_config['sequences'][f'{reference_name}']['ground_truth']['available'])
 
         except IndexError:
             raise ValueError("Not enough arguments provided. Expected: <baseline>, <dataset>, <reference>, <query>.")
@@ -71,21 +68,18 @@ def main():
 
     for _, timewindow in enumerate(reference.timewindow_list):
 
-        # Format the data for the baseline, if pre-generated
-        # if config['stream']:
-        baseline.format_data(config, dataset_config, reference, query, timewindow)
-
-        # Build the execution command for the baseline
-        baseline.build_execute(config, dataset_config, GT_file)
-
-        # Run the baseline
-        baseline.run()
-
-        # Run the evaluation
-        baseline.parse_results(GT_file)
-
-        # Clean up temporary files if necessary
-        baseline.cleanup()
+        # Regenerate for the current window/tolerance instead of reusing stale GT.
+        GT_file = generate_ground_truth(
+            config, dataset_config, dataset_name, reference_name, query_name,
+            reference, query, timewindow=timewindow,
+            gps_available=dataset_config['sequences'][reference_name]['ground_truth']['available'])
+        try:
+            baseline.format_data(config, dataset_config, reference, query, timewindow)
+            baseline.build_execute(config, dataset_config, GT_file)
+            baseline.run()
+            baseline.parse_results(GT_file)
+        finally:
+            baseline.cleanup()
 
         if baseline_name == "ensemble":
             # Do not run any more iterations, ensemble handles all timewindows at once

@@ -24,14 +24,20 @@ import argparse
 import multiprocessing as mp
 import os
 import sys
+from pathlib import Path
+
+# Direct script execution puts utils/ first; resolve the project package instead.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import torch
 from loguru import logger
+from types import SimpleNamespace
+from utils.representations import open_reader, channels, ArrayFrame, runtime_config
 
 
 def patch_dataloader():
     """Force single-process loading when the start method cannot fork."""
-    if mp.get_start_method(allow_none=True) == "fork":
+    if mp.get_start_method(allow_none=True) == "fork" and runtime_config().get("representation") != "reconstruction":
         return
     original = torch.utils.data.DataLoader
 
@@ -68,6 +74,28 @@ def patch_device(requested):
     fe.EventGeM.__init__ = patched_init
 
 
+def patch_representation():
+    import eventgem.dataset as dataset
+
+    class ModelReader:
+        def __init__(self, reader):
+            self.reader = reader
+            self.n_slices = reader.n_slices
+
+        def with_repr(self, *args, **kwargs):
+            # Upstream requests MCTS here; the runtime selection takes precedence.
+            return self
+
+        def slice(self, index):
+            return ArrayFrame(channels(self.reader.slice(index), 10))
+
+    def configured_open(path, dt_ms, offset=None, **kwargs):
+        return ModelReader(open_reader(path, dt_ms, offset))
+
+    # Replace only this module's reader factory; do not mutate EventCV globally.
+    dataset.ecv = SimpleNamespace(open=configured_open)
+
+
 def main():
     ap = argparse.ArgumentParser(
         description="Run Event-GeM's main.py with Event-LAB's compatibility patches",
@@ -78,6 +106,8 @@ def main():
                          "auto promotes to MPS when CUDA is absent")
     known, passthrough = ap.parse_known_args()
 
+    sys.path.insert(0, os.getcwd())
+    patch_representation()
     patch_dataloader()
     if known.eventlab_device != "cpu":
         patch_device(known.eventlab_device)
