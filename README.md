@@ -124,12 +124,11 @@ gps_tolerance: 25.0 # Metres along the reference route
 ```
 Choose **Events** or **Reconstruction**. In Events mode each method selects its own
 input format (for example, counts for LENS, polarity counts for SpikeVPR, and MCTS
-for Event-GeM). Reconstruction streams E2VID intensity images, keeping recurrent
-state and the configured time windows aligned with ground truth. It requires an
-EventCV build exposing `E2VID`; older ONNX-only builds report an upgrade error.
-Local `e2vid/e2vid.safetensors` weights are used when present; otherwise EventCV
-fetches its default weights. Image-only methods use temporary images deleted after
-the run. Reconstruction is an alternative input experiment and does not imply a
+for Event-GeM). Reconstruction streams E2VID intensity images rendered natively by
+EventCV (`ecv.reconstruct`, EventCV >= 1.0.13), keeping recurrent state and the
+configured time windows aligned with ground truth. EventCV downloads the E2VID
+weights on first use and runs them on its GPU backend when one is available,
+otherwise on the CPU; no separate E2VID repository or model download is needed. Image-only methods use temporary images deleted after the run. Reconstruction is an alternative input experiment and does not imply a
 method was trained on reconstructed images.
 
 ### Batch run experiments

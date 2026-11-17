@@ -17,7 +17,6 @@ datasets/brisbane_event/
 datasets/nsavp/
 datasets/fast_slow/
 datasets/qcr_event/
-datasets/rpg_e2vid/
 
 # Output directories
 output/

@@ -60,7 +60,7 @@ sphinx-rtd-theme = ">=3.1.0,<4"
 myst-parser = ">=5.1.0,<6"
 opencv = ">=4.13.0,<5"
 safetensors = "*" 
-eventcv = ">=1.0.8"
+eventcv = ">=1.0.13"
 onnxruntime-cpp = ">=1.17,<2"
 
 [target.linux-64.dependencies]

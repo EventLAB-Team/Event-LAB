@@ -49,22 +49,34 @@ def test_png_adapter_uses_selected_representation(recording, tmp_path):
     assert set(np.unique(image)) <= {0, 255}
 
 
-def test_recurrent_reader_advances_skipped_windows_and_resets():
+def test_recurrent_reader_renders_chunks_in_order_and_resets():
     class Model:
         total = 0
         def reset(self):
             self.total = 0
-        def __call__(self, frame):
-            self.total += frame.numpy()
-            return self.total.copy()[None]
-    reader = SimpleNamespace(n_slices=5, slice=lambda i: ArrayFrame(np.full((1, 2, 2), i + 1)))
-    reconstruction = ReconstructionReader(reader, Model())
+            calls.append('reset')
+    model, calls = Model(), []
+    def render(start, count):
+        # Recurrent stand-in: frame i is the running sum of windows 1..i+1.
+        calls.append((start, count))
+        frames = []
+        for i in range(start, start + count):
+            model.total += i + 1
+            frames.append(np.full((2, 2), model.total))
+        return np.stack(frames)
+    reconstruction = ReconstructionReader(5, model, render, chunk=2)
+    assert reconstruction.slice(2).numpy().shape == (1, 2, 2)
     assert reconstruction.slice(2).numpy()[0, 0, 0] == 6
-    # Peeking the same frame must not advance the recurrent state.
+    assert calls == [(0, 2), (2, 2)]
+    # Revisiting the held chunk must not advance the recurrent state.
+    assert reconstruction.slice(3).numpy()[0, 0, 0] == 10
     assert reconstruction.slice(2).numpy()[0, 0, 0] == 6
-    assert reconstruction.batch([3, 4])[:, 0, 0, 0].tolist() == [10, 15]
+    assert reconstruction.batch([4])[:, 0, 0, 0].tolist() == [15]
+    assert calls == [(0, 2), (2, 2), (4, 1)]
     assert reconstruction.slice(0).numpy()[0, 0, 0] == 1
-    assert reconstruction.slice(2).numpy()[0, 0, 0] == 6
+    assert calls[3:] == ['reset', (0, 2)]
+    with pytest.raises(IndexError):
+        reconstruction.slice(5)
 
 
 def test_configuration_cli_and_subprocess_snapshot(tmp_path, monkeypatch, capsys):
@@ -87,17 +99,16 @@ def test_reconstruction_mode_is_valid():
     validate_runtime({'representation': 'Reconstruction'})
 
 
-def test_representation_cache_changes_with_mode_and_weights(tmp_path, monkeypatch):
-    monkeypatch.setattr('utils.representations.ROOT', tmp_path)
+def test_representation_cache_changes_with_mode_and_eventcv_version(monkeypatch):
+    from utils import representations
     events = representation_tag({'representation': 'Events'})
     config = {'representation': 'Reconstruction'}
-    assert representation_tag(config) != events
-    model = tmp_path / 'e2vid' / 'e2vid.safetensors'
-    model.parent.mkdir()
-    model.write_bytes(b'first')
+    monkeypatch.setattr(representations.metadata, 'version', lambda name: '1.0.13')
     first = representation_tag(config)
-    model.write_bytes(b'replacement model')
+    assert first != events
+    monkeypatch.setattr(representations.metadata, 'version', lambda name: '1.0.14')
     assert representation_tag(config) != first
+    assert representation_tag({'representation': 'Events'}) == events
 
 
 def test_eventgem_factory_preserves_native_eventcv(monkeypatch):
@@ -132,30 +143,43 @@ def test_cli_reconstruction_is_disabled_without_changing_file(tmp_path):
     assert path.read_bytes() == before
 
 
-def test_e2vid_mode_feeds_raw_windows_and_local_weights(tmp_path, monkeypatch):
+def test_e2vid_mode_reconstructs_raw_windows_in_aligned_chunks(monkeypatch):
     import eventcv
-    import utils.representations as representations
-    weights = tmp_path / 'e2vid' / 'e2vid.safetensors'
-    weights.parent.mkdir()
-    weights.write_bytes(b'test weights')
-    monkeypatch.setattr(representations, 'ROOT', tmp_path)
-    seen = []
-    raw = SimpleNamespace(n_slices=3, slice=lambda i: i)
-    monkeypatch.setattr(eventcv, 'open', lambda *args, **kwargs: raw)
+    from utils import representations
+    opened, seen, devices = [], [], []
+    def fake_open(path, **kwargs):
+        opened.append(kwargs)
+        return SimpleNamespace(n_slices=100, time_span=lambda unit: (5_000.0, 1_000_000.0))
     class E2VID:
-        def __init__(self, path):
-            assert path == str(weights)
-        def __call__(self, window):
-            seen.append(window)
-            return np.full((4, 4), window / 3, dtype=np.float32)
+        def __init__(self, weights=None, *, device=None):
+            assert weights is None
+            devices.append(device)
         def reset(self):
             seen.append('reset')
+    def reconstruct(chunk, model, *, max_frames):
+        assert chunk.n_slices == 100 and isinstance(model, E2VID) and 'repr' not in opened[-1]
+        seen.append((opened[-1]['offset_us'], max_frames))
+        return np.zeros((max_frames, 4, 4), dtype=np.float32)
+    monkeypatch.setattr(eventcv, 'open', fake_open)
     monkeypatch.setattr(eventcv, 'E2VID', E2VID, raising=False)
+    monkeypatch.setattr(eventcv, 'reconstruct', reconstruct, raising=False)
+    monkeypatch.setattr(eventcv, 'gpu_available', lambda: True)
     reader = open_reader('recording.h5', 10, config={'representation': 'Reconstruction'})
-    assert reader.slice(2).numpy().shape == (1, 4, 4)
-    assert seen == [0, 1, 2]
+    assert reader.n_slices == 100 and devices == ['gpu']
+    assert reader.slice(70).numpy().shape == (1, 4, 4)
+    # Chunks start at the recording's framing origin and advance by whole windows.
+    assert seen == [(5_000, 64), (5_000 + 64 * 10_000, 36)]
+    assert all(kwargs['dt_ms'] == 10 and 'offset' not in kwargs for kwargs in opened[1:])
     reader.slice(0)
-    assert seen == [0, 1, 2, 'reset', 0]
+    assert seen[2:] == ['reset', (5_000, 64)]
+    # An explicit sequence offset becomes the framing origin of every chunk.
+    seen.clear()
+    open_reader('recording.h5', 10, offset_ms=12.5, config={'representation': 'Reconstruction'}).slice(0)
+    assert opened[-2]['offset'] == 12.5 and seen == [(12_500, 64)]
+    # Without an EventCV GPU backend, E2VID runs on the CPU.
+    monkeypatch.setattr(eventcv, 'gpu_available', lambda: False)
+    open_reader('recording.h5', 10, config={'representation': 'Reconstruction'})
+    assert devices[-1] == 'cpu'
 
 
 def test_global_event_format_overrides_are_rejected():

@@ -41,13 +41,14 @@ Runtime settings
     adapters. Zero retains every window. Direct descriptor adapters retain every
     window. This is temporal sampling, not a ground truth distance tolerance.
 
-Reconstruction requires an EventCV build exposing ``E2VID``. Local weights at
-``e2vid/e2vid.safetensors`` are preferred; otherwise EventCV fetches its default
-weights. Each recording gets fresh recurrent state. Skipped windows are processed
-in order, retaining the configured time-window alignment with ground truth.
-Older ONNX-only builds fail with an explicit upgrade message. Reconstructed images
-are adapted to the model's channel count; this alternative input does not imply
-compatibility with its training distribution. Cache paths distinguish both modes.
+Reconstruction runs E2VID natively through ``ecv.reconstruct`` (EventCV >= 1.0.13);
+EventCV downloads the weights on first use, so no E2VID repository or model download
+is required. It uses EventCV's GPU backend when available, otherwise the CPU. Each recording gets fresh recurrent state. Windows are reconstructed
+in order in bounded chunks, retaining the configured time-window alignment with
+ground truth. Builds without E2VID support fail with an explicit upgrade message.
+Reconstructed images are adapted to the model's channel count; this alternative
+input does not imply compatibility with its training distribution. Cache paths
+distinguish both modes and the EventCV version.
 
 Example
 -------
