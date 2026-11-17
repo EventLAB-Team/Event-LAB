@@ -5,7 +5,7 @@ batch_experiments:
     queries: [sunrise]
     baselines: [sparse_event, lens, eventvlad]
     config:
-      representation: polarity
+      representation: Events
       timewindows: [33, 66, 120, 250]
 
   - dataset: brisbane_event
@@ -13,7 +13,7 @@ batch_experiments:
     queries: [sunrise]
     baselines: [vprmethods, ensemble]
     config:
-      representation: polarity
+      representation: Events
       timewindows: [33, 66, 120, 250]
     baseline_config:
       vprmethods:

@@ -38,6 +38,9 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from scipy import interpolate
+from loguru import logger
+
+from utils.event_windows import distance_ground_truth, is_manifest, resolve_windows
 
 
 # =============================================================================
@@ -788,6 +791,11 @@ def generate_ground_truth(config,
     gt_dir = os.path.join(config['data_path'], dataset_name, 'ground_truth')
     os.makedirs(gt_dir, exist_ok=True)
 
+    # Window manifests carry a GPS position per window: match directly by distance.
+    if is_manifest(getattr(reference_data, 'dataset_raw', '')):
+        return windows_ground_truth(config, reference_data.dataset_raw, query_data.dataset_raw,
+                                    reference_name, query_name, timewindow, gt_dir)
+
     # Pose-only fast path (default)
     if fast and gps_available:
         return ground_truth_from_pose_only(
@@ -818,6 +826,21 @@ def generate_ground_truth(config,
         return os.path.join(gt_dir, f"{reference_name}_{query_name}_GT.npy")
 
     raise ValueError("No suitable GT path selected; set fast=True or provide gps_available/force_csv=True.")
+
+def windows_ground_truth(config, reference_manifest, query_manifest, reference_name, query_name,
+                         timewindow, gt_dir):
+    """Positive where reference and query windows are within ``gps_tolerance`` metres."""
+    reference = resolve_windows(reference_manifest, timewindow)
+    query = resolve_windows(query_manifest, timewindow)
+    tolerance = float(config.get('gps_tolerance', 25.0))
+    gt = distance_ground_truth(reference, query, tolerance)
+    out = os.path.join(gt_dir, f"{device_safe_str(reference_name)}_{device_safe_str(query_name)}_GT.npy")
+    np.save(out, gt)
+    covered = int(gt.any(axis=0).sum())
+    logger.info(f"Ground truth {gt.shape}: {covered}/{gt.shape[1]} queries have a reference "
+                f"within {tolerance:g} m")
+    return out
+
 
 # Small utility: sanitize names for filesystem safety (optional)
 def device_safe_str(s: str) -> str:

@@ -37,7 +37,7 @@ from utils.representations import open_reader, channels, ArrayFrame, runtime_con
 
 def patch_dataloader():
     """Force single-process loading when the start method cannot fork."""
-    if mp.get_start_method(allow_none=True) == "fork" and runtime_config().get("representation") != "reconstruction":
+    if mp.get_start_method(allow_none=True) == "fork" and runtime_config().get("representation") != "Reconstruction":
         return
     original = torch.utils.data.DataLoader
 
@@ -76,6 +76,10 @@ def patch_device(requested):
 
 def patch_representation():
     import eventgem.dataset as dataset
+
+    # The upstream method owns MCTS and its temporal options in Events mode.
+    if runtime_config().get('representation', 'Events') == 'Events':
+        return
 
     class ModelReader:
         def __init__(self, reader):

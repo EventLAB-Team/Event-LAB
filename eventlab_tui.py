@@ -1,4 +1,4 @@
-"""Event-LAB's keyboard-friendly experiment workbench."""
+"""EventLAB - Localization's keyboard-friendly experiment workbench."""
 import asyncio
 import copy
 import json
@@ -12,23 +12,25 @@ from textual.binding import Binding
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
-from textual.theme import Theme
-from textual.widgets import (Button, Footer, Input, Label, RichLog,
+from textual.widgets import (Button, Footer, Input, RichLog,
                              Select, Static, Link, DataTable, OptionList, TabbedContent,
                              TabPane)
 
 from utils.configuration import (BASELINE_CHOICES, CONFIG, FIELDS, ROOT, dumps, parse_value,
                                  read_config, update_config, write_config,
-                                 REPRESENTATION_DOCS, RECONSTRUCTION_UNAVAILABLE)
+                                 REPRESENTATION_DOCS)
 from utils.experiments import Queue, catalog, expand_batch
 from utils.terminal_output import TerminalOutput
-from utils.terminal_widgets import SelectionList, RoleTable, ValueEditor, CompactTable, HomeMenu, EventLogo
+from utils.terminal_widgets import (SelectionList, RoleTable, ValueEditor, CompactTable, HomeMenu, EventLogo,
+                                    EventField, Panel, SectionTabs)
+from utils.terminal_theme import COMPLETE, CYAN, FAINT, MISSING, MUTED, PARTIAL, eventlab_theme, eyebrow
 from utils.terminal_results import ResultsBrowser
 
 REPOSITORY = 'https://github.com/EventLAB-Team/Event-LAB'
 PAPER = 'https://arxiv.org/abs/2509.14516'
 DATASET_LABELS = {'brisbane_event': 'Brisbane Event', 'gardens_point_event': 'Gardens Point',
-                  'fast_slow': 'Fast & Slow', 'nsavp': 'NSAVP', 'qcr_event': 'QCR Event'}
+                  'fast_slow': 'Fast & Slow', 'nsavp': 'NSAVP', 'qcr_event': 'QCR Event',
+                  'springfield_event': 'Springfield', 'nyc_event': 'NYC Event'}
 
 
 class Confirm(ModalScreen[bool]):
@@ -47,7 +49,7 @@ class Confirm(ModalScreen[bool]):
                 yield Button('Back', id='no')
 
     def on_mount(self):
-        self.query_one('#dialog').border_title = 'REVIEW & RUN' if self.accept.startswith('Run ') else 'CONFIRM'
+        self.query_one('#dialog').border_title = eyebrow('Review & run' if self.accept.startswith('Run ') else 'Confirm')
         self.query_one('#yes').focus()
 
     @on(Button.Pressed)
@@ -78,7 +80,7 @@ def run_summary(jobs, config):
         lines += [dataset, f"  {reference} → {', '.join(queries)}",
                   f"  Baselines: {', '.join(baselines)}", '']
     values = config.get('timewindows', [])
-    lines.append(f"{config.get('representation', 'polarity')} · Time windows (ms): {', '.join(str(v) for v in values)}")
+    lines.append(f"{config.get('representation', 'Events')} · Time windows (ms): {', '.join(str(v) for v in values)}")
     overridden = sum(bool(j['config'] or j['baseline_config']) for j in jobs)
     if overridden:
         lines.append(f'Batch overrides apply to {overridden} experiments.')
@@ -88,72 +90,110 @@ def run_summary(jobs, config):
 
 class EventLabApp(App):
     ENABLE_COMMAND_PALETTE = False
-    TITLE = 'Event-LAB'
+    TITLE = 'EventLAB - Localization'
     SUB_TITLE = 'Experiment workbench'
     CSS = """
     Screen { background: $background; color: $foreground; }
-    #topbar { height: 3; padding: 0 2; background: $surface; border-bottom: solid $primary; align-vertical: middle; }
-    #location { width: 1fr; color: $foreground; text-style: bold; padding-left: 1; }
-    #home-back { min-width: 10; width: 10; }
+    * { scrollbar-size-vertical: 1; scrollbar-size-horizontal: 1; }
+    #topbar { height: 2; padding: 0 1; background: $background; }
+    #home-back { width: 10; min-width: 10; height: 2; margin: 0; padding: 0 1; background: $background;
+                 color: $muted; border-bottom: solid $rule; text-style: none; content-align: left top; }
+    #home-back:hover { color: $foreground; background: $background; }
+    #home-back:focus { color: $primary; background: $background; text-style: bold; }
+    #section-tabs { width: 1fr; height: 2; }
     TabbedContent { height: 1fr; }
     TabbedContent > ContentTabs { display: none; }
     TabbedContent > ContentSwitcher { height: 1fr; }
     TabPane { height: 1fr; padding: 0 2; overflow-y: auto; }
-    #home-scroll { align: center middle; }
-    #welcome { width: 100%; max-width: 76; height: auto; }
-    #brand { height: 5; content-align: center middle; }
-    #intro { height: auto; margin: 1 0; text-align: center; color: #a5b4ce; }
-    #home-menu { height: 12; background: $surface; border: round $primary; padding: 0 1; }
+
+    #home-scroll { align: center middle; background: $background; }
+    #welcome { width: 100%; max-width: 72; height: auto; }
+    #brand { height: 11; width: 100%; }
+    #intro { height: auto; margin: 1 0; color: $dim; }
+    #home-menu { height: 12; background: $elevated; border: solid $rule-strong; padding: 0 1;
+                 border-title-color: $faint; border-title-align: left;
+                 border-subtitle-color: $faint; border-subtitle-align: right; }
+    #home-menu:focus { border: solid $rule-strong; border-title-color: $cyan; }
     #home-menu > .option-list--option { padding: 0 1; }
-    #home-menu > .option-list--option-highlighted,
-    #home-menu:focus > .option-list--option-highlighted { background: #263750; color: $primary; text-style: bold; }
-    #home-menu > .option-list--option-hover { background: #202c43; }
-    #home-menu { border-title-color: $primary; border-title-style: bold; border-subtitle-color: #a5b4ce; border-subtitle-align: center; }
-    #credits { height: auto; color: #8797b3; margin-top: 1; text-align: center; }
+    #home-menu > .option-list--option-highlighted { background: $raised; color: $foreground; }
+    #home-menu:focus > .option-list--option-highlighted { background: $magenta-deep; color: $primary; }
+    #home-menu > .option-list--option-hover { background: $raised; }
+    #credits { height: auto; color: $faint; margin-top: 1; }
     .compact #intro { margin: 0; }
     .compact #credits { margin-top: 0; }
-    .compact #topbar { height: 2; }
-    .muted { color: #a5b4ce; height: auto; }
-    .workspace-intro { height: 3; padding-top: 1; color: #a5b4ce; }
+
+    .muted { color: $muted; height: auto; }
+    .workspace-intro { height: 3; padding-top: 1; color: $muted; }
     .buttons { height: 3; min-height: 3; align-vertical: middle; }
-    Button { height: 1; min-height: 1; border: none; background: #263750; color: $foreground; margin-right: 1; }
+    Button { height: 1; min-height: 1; border: none; background: $elevated; color: $dim;
+             margin-right: 1; text-style: none; }
+    Button:hover { background: $raised; color: $foreground; }
+    Button:focus { background: $magenta-deep; color: $primary; text-style: bold; }
+    Button.-primary { background: $primary; color: $background; text-style: bold; }
+    Button.-primary:hover { background: $primary-lighten-1; color: $background; }
+    Button.-primary:focus { background: $foreground; color: $background; text-style: bold; }
+    Button.-error { background: $elevated; color: $error; }
+    Button:disabled, Button.-primary:disabled, Button.-error:disabled { background: $elevated; color: $faint; text-opacity: 100%; }
     .buttons Button { min-width: 8; width: auto; padding: 0 2; }
-    .selection-all { width: 100%; min-width: 0; margin: 0; }
-    #download-status { height: 2; color: #a5b4ce; }
-    Button:hover { background: #3a4d69; }
-    Button:focus { background: $foreground; color: $background; text-style: bold; }
-    Button.-primary { background: $primary; color: #0d111c; text-style: bold; }
-    Button.-primary:focus { background: $secondary; color: #0d111c; text-style: bold; }
-    Button.-error { background: #672b44; color: $foreground; }
+    .selection-all { width: 100%; min-width: 0; margin: 0; background: $background; color: $faint; }
+    .selection-all:hover { background: $raised; }
+    #download-status { height: 2; color: $muted; }
+
     .columns { height: 1fr; }
-    .column { width: 1fr; margin-right: 1; border: round #35425c; padding: 0 1; background: $surface; }
-    .column:focus-within { border: round $primary; }
-    Label { color: $secondary; text-style: bold; width: 1fr; height: 2; border-bottom: solid #35425c; }
-    OptionList, DataTable { background: $surface; border: none; }
-    #result-list { border: round $primary; border-title-color: $primary; }
+    .column { width: 1fr; margin-right: 1; border: solid $rule; padding: 0 1; background: $background;
+              border-title-color: $muted; border-title-align: left; }
+    .column:focus-within { border: solid $cyan 80%; border-title-color: $foreground; }
+    OptionList, DataTable { background: $background; border: none; }
+    OptionList:focus, DataTable:focus { background-tint: $background 0%; }
+    OptionList > .option-list--option-highlighted { background: $raised; color: $foreground; }
+    OptionList:focus > .option-list--option-highlighted { background: $magenta-deep; color: $primary; text-style: bold; }
+    #result-list { border: solid $rule; border-title-color: $muted; border-title-align: left; }
+    #result-list:focus { border: solid $cyan 80%; border-title-color: $foreground; }
     SelectionList { height: 1fr; padding: 0; }
-    SelectionList > .option-list--option-highlighted { background: #202c43; color: #a5b4ce; }
-    SelectionList:focus > .option-list--option-highlighted { background: #304761; color: $primary; text-style: bold; }
-    DataTable > .datatable--header { background: #263750; color: $primary; text-style: bold; }
-    DataTable > .datatable--cursor { background: #202c43; color: #a5b4ce; }
-    DataTable:focus > .datatable--cursor { background: #304761; color: $primary; text-style: bold; }
+    SelectionList > .option-list--option-highlighted { background: $raised; color: $foreground; }
+    SelectionList:focus > .option-list--option-highlighted { background: $magenta-deep; color: $primary; text-style: bold; }
+    DataTable > .datatable--header { background: $background; color: $faint; text-style: none; }
+    DataTable > .datatable--cursor { background: $raised; color: $foreground; }
+    DataTable:focus > .datatable--cursor { background: $magenta-deep; color: $primary; text-style: bold; }
+    DataTable > .datatable--hover { background: $raised; }
+    #trajectory-title { height: 1; color: $cyan; }
     #fields, #trajectories { height: 1fr; }
+    #fields { border: solid $rule; border-title-color: $muted; border-title-align: left; }
+    #fields:focus { border: solid $cyan 80%; border-title-color: $foreground; }
     #field-docs { display: none; }
-    #field-help { height: auto; min-height: 3; max-height: 5; padding-top: 1; color: #a5b4ce; }
-    #config-file { height: 3; margin: 1 0; }
+    #field-help { height: auto; min-height: 3; max-height: 5; padding-top: 1; color: $muted; }
+    #config-file { height: 3; margin: 1 0 0 0; }
     .compact #config-file { margin: 0; }
     #config-message { display: none; }
     #experiment-preview { height: 2; padding-top: 1; color: $primary; }
     #batch-path { display: none; }
-    #batch-label { height: 1; color: #a5b4ce; }
-    #log { height: 1fr; border: round #35425c; background: $surface; }
-    #progress { height: 1; color: $primary; text-wrap: nowrap; text-overflow: ellipsis; }
+    #batch-label { height: 1; color: $faint; }
+
+    Select > SelectCurrent { background: $background; border: solid $rule; }
+    Select:focus > SelectCurrent { border: solid $cyan 80%; background: $background; }
+    Select > SelectCurrent Static#label { color: $foreground; }
+    Select > SelectCurrent .arrow { color: $faint; }
+    Select > SelectOverlay { background: $elevated; border: solid $rule-strong; }
+    Select.-textual-compact > SelectCurrent { border: none; background: $elevated; }
+    Input { background: $background; border: solid $rule; }
+    Input:focus { border: solid $cyan 80%; background: $background; }
+    Input.-textual-compact { background: $elevated; border: none; }
+    Link { color: $cyan; }
+
+    #log { height: 1fr; border: solid $rule; background: $background; border-title-color: $muted; border-title-align: left; }
+    #log:focus { border: solid $cyan 80%; border-title-color: $foreground; }
+    #progress { height: 1; color: $cyan; text-wrap: nowrap; text-overflow: ellipsis; }
     #run-status { height: auto; margin-top: 1; color: $primary; }
-    Footer { background: $surface; color: #a5b4ce; }
-    Confirm, ValueEditor { align: center middle; background: #060914 80%; }
-    #dialog { width: 80%; max-width: 100; height: auto; max-height: 80%; border: round $primary; background: $surface; padding: 1 2; border-title-color: $secondary; border-title-style: bold; }
+    Footer { background: $background; color: $muted; }
+    Toast { background: $elevated; }
+    Tooltip { background: $elevated; color: $dim; border: solid $rule-strong; }
+
+    Confirm, ValueEditor { align: center middle; background: $background 75%; }
+    #dialog { width: 80%; max-width: 100; height: auto; max-height: 80%; border: solid $rule-strong;
+              background: $elevated; padding: 1 2; border-title-color: $primary; border-title-style: bold; border-title-align: left; }
     #dialog > VerticalScroll { height: auto; max-height: 1fr; }
-    #value-dialog { width: 64; max-width: 95%; height: auto; border: round $primary; padding: 1 2; background: $surface; }
+    #value-dialog { width: 64; max-width: 95%; height: auto; border: solid $rule-strong; padding: 1 2;
+                    background: $elevated; border-title-color: $cyan; border-title-align: left; }
     """
     BINDINGS = [Binding('h', 'home', 'Home'), Binding('x', 'quit', 'Quit'),
                 Binding('s', 'save_config', 'Save settings'), Binding('u', 'reload', 'Reload'),
@@ -188,40 +228,38 @@ class EventLabApp(App):
         self.download_selection = set()
         self.download_dataset = next(iter(self.datasets), None)
         self.download_config_stamp = None
-        self.register_theme(Theme(
-            name='eventlab', primary='#56dce8', secondary='#ff718f', accent='#ff718f',
-            foreground='#e8edf7', background='#0d111c', surface='#171e30', panel='#171e30',
-            success='#56dce8', warning='#f5cf86', error='#ff718f', dark=True,
-            variables={'footer-key-foreground': '#56dce8', 'block-cursor-text-style': 'bold'}))
+        self.register_theme(eventlab_theme())
         self.theme = 'eventlab'
 
     def compose(self) -> ComposeResult:
         with Horizontal(id='topbar'):
-            yield Button('‹ Home', id='home-back')
-            yield Static('EventLAB', id='location')
+            yield Button('‹ home', id='home-back')
+            yield SectionTabs(id='section-tabs')
         with TabbedContent(initial='home', id='tabs'):
             with TabPane('Home', id='home'):
-                with VerticalScroll(id='home-scroll'):
+                with EventField(id='home-scroll'):
                     with Vertical(id='welcome'):
                         yield EventLogo(id='brand')
-                        yield Static('An experiment workbench for event-based localization.', id='intro')
+                        yield Static('EventLAB - Localization: a keyboard workbench for benchmarking '
+                                     'event-based place recognition.', id='intro')
                         yield HomeMenu(
-                            Text.assemble(('Run an experiment\n', 'bold'), ('Choose methods, datasets and trajectories.', '#a5b4ce')),
-                            Text.assemble(('Manage downloads\n', 'bold'), ('Prepare datasets and baseline model weights.', '#a5b4ce')),
-                            Text.assemble(('Edit configuration\n', 'bold'), ('Review runtime and baseline configuration.', '#a5b4ce')),
-                            Text.assemble(('View activity\n', 'bold'), ('Follow progress and inspect experiment logs.', '#a5b4ce')),
-                            Text.assemble(('View results\n', 'bold'), ('Explore matrices, PR curves and Recall@K.', '#a5b4ce')),
+                            HomeMenu.item(1, 'Run an experiment', 'Choose methods, datasets and trajectories.'),
+                            HomeMenu.item(2, 'Manage downloads', 'Prepare datasets and baseline model weights.'),
+                            HomeMenu.item(3, 'Edit configuration', 'Review runtime and baseline configuration.'),
+                            HomeMenu.item(4, 'View activity', 'Follow progress and inspect experiment logs.'),
+                            HomeMenu.item(5, 'View results', 'Explore matrices, PR curves and Recall@K.'),
                             id='home-menu')
                         yield Static(Text.assemble(
-                            ('Event-LAB Team  ·  ', 'bold'), (REPOSITORY + '\n', f'link {REPOSITORY}'),
-                            ('Event-LAB: Towards Standardized Evaluation of Neuromorphic Localization Methods\n', ''),
-                            ('Hines · Fontan · Milford · Fischer  /  ICRA 2026\n', ''),
-                            (PAPER, f'link {PAPER}')), id='credits')
+                            ('Towards Standardized Evaluation of Neuromorphic Localization Methods\n', MUTED),
+                            ('Hines · Fontan · Milford · Fischer  ·  EventLAB Team\n', FAINT),
+                            ('↗ ', FAINT), (REPOSITORY.removeprefix('https://'), f'{CYAN} link {REPOSITORY}'),
+                            ('   ↗ ', FAINT), (PAPER.removeprefix('https://'), f'{CYAN} link {PAPER}')),
+                            id='credits')
             with TabPane('Configuration', id='configuration'):
                 yield Select([('Runtime · config.yaml', str(self.config_path))] +
                              [(f'Baseline · {name}', str(ROOT / 'baselines' / f'{name}.yaml')) for name in self.baselines],
                              value=str(self.config_path), allow_blank=False, id='config-file')
-                yield Static('Edit settings, then Save. Reconstruction is currently unavailable.', id='config-message')
+                yield Static('Edit settings, then Save. Each method owns its event input format.', id='config-message')
                 yield CompactTable(id='fields', cursor_type='row')
                 yield Static('', id='field-help', markup=False)
                 yield Link('reader.with_repr() ↗', url=REPRESENTATION_DOCS, id='field-docs')
@@ -231,17 +269,14 @@ class EventLabApp(App):
             with TabPane('Experiments', id='experiments'):
                 yield Static('Choose what to compare. Assign one reference (R) and one or more queries (Q) per dataset.', classes='workspace-intro')
                 with Horizontal(classes='columns'):
-                    with Vertical(classes='column'):
-                        yield Label('1  Methods')
+                    with Panel(1, 'Methods', classes='column'):
                         yield SelectionList(*[(n, n) for n in self.baselines], id='baselines')
                         yield Button('Select all', id='all-baselines', classes='selection-all')
-                    with Vertical(classes='column'):
-                        yield Label('2  Datasets')
+                    with Panel(2, 'Datasets', classes='column'):
                         yield SelectionList(*[(DATASET_LABELS.get(n, n), n)
                                              for n in self.datasets], id='datasets')
                         yield Button('Select all', id='all-datasets', classes='selection-all')
-                    with Vertical(classes='column'):
-                        yield Label('3  Trajectories')
+                    with Panel(3, 'Trajectories', classes='column'):
                         yield Static('Highlight a dataset', id='trajectory-title', markup=False)
                         yield RoleTable(id='trajectories', cursor_type='row')
                         yield Static('R ref · Q query\nSpace cycle · Del off', classes='muted')
@@ -259,16 +294,13 @@ class EventLabApp(App):
             with TabPane('Downloads', id='downloads'):
                 yield Static('Prepare repositories, configured weights, raw recordings and ground truth. No inference or frame generation.', classes='workspace-intro')
                 with Horizontal(classes='columns'):
-                    with Vertical(classes='column', id='download-methods'):
-                        yield Label('1  Baseline assets')
+                    with Panel(1, 'Baselines', classes='column', id='download-methods'):
                         yield SelectionList(*[(n, n) for n in self.baselines], id='download-baselines')
                         yield Button('Select all', id='all-download-baselines', classes='selection-all')
-                    with Vertical(classes='column'):
-                        yield Label('2  Datasets · → recordings')
+                    with Panel(2, 'Datasets', classes='column'):
                         yield SelectionList(*[(name, name) for name in self.datasets], id='download-datasets')
                         yield Button('Select all', id='all-download-datasets', classes='selection-all')
-                    with Vertical(classes='column'):
-                        yield Label('3  Recordings')
+                    with Panel(3, 'Recordings', classes='column'):
                         yield SelectionList(id='download-sequences')
                         yield Button('Select all', id='all-download-sequences', classes='selection-all')
                 yield Static('Choose datasets or individual recordings to download.', id='download-status', markup=False)
@@ -293,6 +325,8 @@ class EventLabApp(App):
         self.last_progress = ''
         self.set_interval(.1, self.flush_logs)
         self.set_interval(1, self.check_download_config)
+        self.query_one('#fields').border_title = eyebrow('Settings')
+        self.log_display.border_title = eyebrow('Output')
         self.query_one('#home-menu').focus()
         self.query_one('#topbar').display = False
 
@@ -317,8 +351,7 @@ class EventLabApp(App):
         table.clear(columns=True)
         table.add_columns('Setting', 'Value')
         self.field_keys = [k for k in data if self.edit_path != self.config_path or k in FIELDS]
-        table.add_rows([(Text(key, style='dim') if key == 'reconstruction' and self.edit_path == self.config_path else key,
-                         self.field_value(key, data[key])) for key in self.field_keys])
+        table.add_rows([(key, self.field_value(key, data[key])) for key in self.field_keys])
 
     def field_choices(self, key):
         if self.edit_path == self.config_path:
@@ -326,30 +359,12 @@ class EventLabApp(App):
         return BASELINE_CHOICES.get(self.edit_path.stem, {}).get(key)
 
     def field_value(self, key, value):
-        if self.edit_path == self.config_path and key == 'reconstruction':
-            return Text('Unavailable · awaiting EventCV methods', style='dim')
         if self.field_choices(key):
             return f'{value_text(value)} ▾'
-        if self.edit_path == self.config_path and key == 'representation_options' and not value:
-            return 'EventCV defaults (no overrides)'
         return value_text(value)
 
     def field_description(self, key):
         if self.edit_path == self.config_path:
-            if key == 'representation_options':
-                name = self.pending.get('representation', 'polarity')
-                examples = {
-                    'polarity': '{normalize: false} keeps raw event counts.',
-                    'count': '{normalize: true} scales counts to 0–255.',
-                    'voxel': '{bins: 5} splits each window into five time bins.',
-                    'tsurf': '{tau_ms: 50} makes events fade over 50 ms.',
-                    'atsurf': '{tau_ms: 50} makes events fade over 50 ms.',
-                    'mcts': '{max_window_ms: 100} uses up to 100 ms of event history.',
-                }
-                if name == 'reconstruction':
-                    return 'Not used for reconstruction; reconstruction has its own input settings.'
-                return (f'EventCV parameters for {name}, passed to reader.with_repr(). '
-                        'Leave {} for defaults. ' + examples.get(name, ''))
             return FIELDS[key][3]
         comment = self.edit_data.ca.items.get(key)
         return comment[2].value.strip().lstrip('#').strip() if comment and comment[2] else ''
@@ -363,11 +378,8 @@ class EventLabApp(App):
             return
         key = self.field_keys[event.cursor_row]
         help_text = self.field_description(key)
-        self.query_one('#field-docs', Link).display = (
-            self.edit_path == self.config_path and key == 'representation_options')
-        if key == 'reconstruction' and self.edit_path == self.config_path:
-            hint = 'Unavailable'
-        elif self.field_choices(key):
+        self.query_one('#field-docs', Link).display = False
+        if self.field_choices(key):
             hint = 'Enter open dropdown · S save'
         elif key == 'data_path' and self.edit_path == self.config_path:
             hint = 'Enter edit and save dataset folder'
@@ -380,9 +392,6 @@ class EventLabApp(App):
         index = self.query_one('#fields', DataTable).cursor_row
         key = self.field_keys[index]
         runtime = self.edit_path == self.config_path
-        if runtime and key == 'reconstruction':
-            self.notify(RECONSTRUCTION_UNAVAILABLE)
-            return
         value = self.pending[key]
         def accept(text):
             if text is None:
@@ -405,9 +414,7 @@ class EventLabApp(App):
         else:
             choices = self.field_choices(key)
             self.push_screen(ValueEditor(
-                key, value_text(value), choices, self.field_description(key),
-                disabled_choices={'reconstruction'} if runtime and key == 'representation' else (),
-                docs_url=REPRESENTATION_DOCS if runtime and key == 'representation_options' else None), accept)
+                key, value_text(value), choices, self.field_description(key)), accept)
 
     @on(Select.Changed, '#config-file')
     async def change_config(self, event):
@@ -607,20 +614,18 @@ class EventLabApp(App):
     def section_changed(self, event):
         targets = {'home': '#home-menu', 'configuration': '#fields', 'experiments': '#baselines',
                    'downloads': '#download-baselines', 'logs': '#log', 'results': '#result-list'}
-        titles = {'home': 'Welcome', 'configuration': 'Configuration', 'experiments': 'Run an experiment',
-                  'downloads': 'Manage downloads', 'logs': 'Activity', 'results': 'Results'}
         if event.pane.id == 'results':
             self.query_one(ResultsBrowser).refresh_results()
         elif event.pane.id == 'downloads':
             self.refresh_downloads()
-        self.query_one('#location', Static).update('EventLAB  /  ' + titles[event.pane.id])
+        self.query_one(SectionTabs).show(event.pane.id)
         self.query_one('#topbar').display = event.pane.id != 'home'
-        logo = self.query_one(EventLogo)
-        if hasattr(logo, 'animation'):
-            if event.pane.id == 'home':
-                logo.animation.resume()
-            else:
-                logo.animation.pause()
+        for animated in (self.query_one(EventLogo), self.query_one(EventField)):
+            if hasattr(animated, 'animation'):
+                if event.pane.id == 'home':
+                    animated.animation.resume()
+                else:
+                    animated.animation.pause()
         matches = list(self.query(targets[event.pane.id]))
         if matches:
             matches[0].focus()
@@ -747,7 +752,7 @@ class EventLabApp(App):
         listing = self.query_one('#download-baselines', SelectionList)
         for index, name in enumerate(self.baselines):
             available, total, missing = baselines[name]
-            color = '#6dd79a' if available == total else '#f5b45b' if available else '#ff718f'
+            color = COMPLETE if available == total else PARTIAL if available else MISSING
             listing.items[index] = (Text(f'{name} ({available}/{total})', style=color), name)
             listing.replace_option_prompt_at_index(index, listing.prompt(listing.items[index]))
         self.baseline_states = baselines
@@ -755,10 +760,10 @@ class EventLabApp(App):
         self.render_download_recordings()
         downloaded = sum(status == 'Downloaded' for status in states.values())
         self.query_one('#download-status', Static).update(Text.assemble(
-            (f'{downloaded}/{len(states)} available · ', '#a5b4ce'),
-            ('Green: complete', '#6dd79a'), (' · ', '#a5b4ce'), ('Orange: partial', '#f5b45b'),
-            (' · ', '#a5b4ce'), ('Red: missing\n', '#ff718f'),
-            (f'Folder: {root}', '#a5b4ce')))
+            (f'{downloaded}/{len(states)} available · ', MUTED),
+            ('Green: complete', COMPLETE), (' · ', MUTED), ('Orange: partial', PARTIAL),
+            (' · ', MUTED), ('Red: missing\n', MISSING),
+            (f'Folder: {root}', MUTED)))
 
     def check_download_config(self):
         try:
@@ -786,8 +791,8 @@ class EventLabApp(App):
     def render_download_recordings(self):
         listing = self.query_one('#download-sequences', SelectionList)
         name = self.download_dataset
-        items = [(Text(seq, style={'Downloaded': '#6dd79a', 'Partial': '#f5b45b'}.get(
-                      self.download_states.get((name, seq)), '#ff718f')), (name, seq))
+        items = [(Text(seq, style={'Downloaded': COMPLETE, 'Partial': PARTIAL}.get(
+                      self.download_states.get((name, seq)), MISSING)), (name, seq))
                  for seq in self.datasets[name]]
         changed_dataset = [i[1] for i in listing.items] != [i[1] for i in items]
         listing.items = items
@@ -808,7 +813,7 @@ class EventLabApp(App):
             selected = sum((name, seq) in self.download_selection for seq in sequences)
             available = sum(self.download_states.get((name, seq)) == 'Downloaded' for seq in sequences)
             partial = available > 0 or any(self.download_states.get((name, seq)) == 'Partial' for seq in sequences)
-            color = '#6dd79a' if available == len(sequences) else '#f5b45b' if partial else '#ff718f'
+            color = COMPLETE if available == len(sequences) else PARTIAL if partial else MISSING
             if selected == len(sequences):
                 listing.selected.append(name)
             listing.items[index] = (Text(f'{name} ({available}/{len(sequences)})', style=color), name)

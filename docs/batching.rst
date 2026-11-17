@@ -1,7 +1,7 @@
 Batching
 ========
 
-Batching runs several Event-LAB experiments from ``batch_config.yaml``. It is
+Batching runs several EventLAB - Localization experiments from ``batch_config.yaml``. It is
 useful when you want to compare several baselines, queries, and frame settings
 without typing each command by hand.
 
@@ -13,7 +13,7 @@ Run a batch
    pixi run batch
 
 This command reads ``batch_config.yaml``, updates ``config.yaml`` for each
-experiment, writes ``run_batch.sh``, and runs each generated Event-LAB command
+experiment, writes ``run_batch.sh``, and runs each generated EventLAB - Localization command
 in order.
 
 Batch configuration
@@ -33,7 +33,7 @@ Batch configuration
 
 Each experiment defines one dataset, one reference sequence, one or more query
 sequences, and one or more baselines. The ``config`` block contains the
-Event-LAB settings that should be applied before those runs.
+EventLAB - Localization settings that should be applied before those runs.
 
 Baseline overrides
 ------------------
@@ -47,7 +47,7 @@ one experiment.
      vprmethods:
        method: ["cosplace", "eigenplaces", "mixvpr"]
 
-When ``method`` is a list, Event-LAB expands it into separate runs and writes
+When ``method`` is a list, EventLAB - Localization expands it into separate runs and writes
 each method into the baseline config before running that command.
 
 Generated commands

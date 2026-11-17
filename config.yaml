@@ -1,6 +1,6 @@
 # General configuration for Event-Lab
 
-data_path: "/media/adam/vprdatasets/eventgem" # Path to the datasets directory
+data_path: "./datasets"                       # Path to the datasets directory
 
 # Processing options
 request_input: false # Request input from the user for dataset download
@@ -9,11 +9,8 @@ filter_places_sec: 0 # Minimum separation in seconds for image-folder adapters
 
 # EventCV streams recordings on demand; no persistent frame cache is built.
 timewindows: [50] # Window durations in milliseconds
-representation: "polarity" # EventCV representation; reconstruction is unavailable for now
-# Parameter documentation: https://docs.eventcv.net/en/latest/api.html#eventcv.EventReader.with_repr
-representation_options: {} # EventCV reader.with_repr() parameters; {} uses defaults
+representation: "Events" # Events (method-native format) or Reconstruction (E2VID)
 hot_pixel_filter: true
-reconstruction: {} # Disabled until EventCV supports named reconstruction methods
 
 # Available baselines
 VPR-Baselines:

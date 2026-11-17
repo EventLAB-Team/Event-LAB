@@ -4,8 +4,8 @@ Installation
 Packages and dependencies
 -------------------------
 
-Event-LAB is powered by `Pixi <https://pixi.prefix.dev/latest/>`_ for all package and dependency management. This allows
-Event-LAB to handle all the baseline requirements and allows it to be cross platform for seamless integration. If you have
+EventLAB - Localization is powered by `Pixi <https://pixi.prefix.dev/latest/>`_ for all package and dependency management. This allows
+EventLAB - Localization to handle all the baseline requirements and allows it to be cross platform for seamless integration. If you have
 not already installed Pixi, run the following command in your teminal:
 
 .. code-block:: bash
@@ -13,7 +13,7 @@ not already installed Pixi, run the following command in your teminal:
     curl -fsSL https://pixi.sh/install.sh | bash
 
 The provided ``pixi.toml`` and ``pixi.lock`` files in the repository handle all packages and dependencies and the 
-operation of all the various functions in Event-LAB.
+operation of all the various functions in EventLAB - Localization.
 
 .. note::
 

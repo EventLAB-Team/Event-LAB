@@ -1,8 +1,8 @@
 Configuration
 =============
 
-Event-LAB reads its main settings from ``config.yaml`` in the project root.
-Recordings are streamed through EventCV. Event-LAB does not create persistent
+EventLAB - Localization reads its main settings from ``config.yaml`` in the project root.
+Recordings are streamed through EventCV. EventLAB - Localization does not create persistent
 frame or place stores. Image-only upstream methods use temporary PNGs, cleaned
 up after the run (including failed runs).
 
@@ -26,25 +26,11 @@ Runtime settings
     ensemble combines the listed durations in a single run.
 
 ``representation``
-    One of ``polarity`` (default), ``binary``, ``count``, ``voxel``, ``tsurf``,
-    ``atsurf``, ``tencode``, ``redblue``, ``countmask``, ``mcts``, or ``flow``.
-    The editor shows a dropdown arrow; Enter or a click
-    opens the list, then use Up/Down and Enter to select. Reconstruction appears
-    greyed out and cannot be selected until EventCV supports named methods.
-    Sparse point sets and connected-component labels are not dense stream representations.
-
-``representation_options``
-    **EventCV representation parameters**, passed to
-    ``reader.with_repr(representation, **representation_options)``. See the
-    `reader.with_repr() documentation
-    <https://docs.eventcv.net/en/latest/api.html#eventcv.EventReader.with_repr>`_.
-    Leave ``{}`` to use EventCV's
-    defaults; the editor shows this as “EventCV defaults (no overrides)”.
-    For voxel, ``{bins: 5}`` divides each time window into five smaller time bins.
-    For polarity, ``{normalize: false}`` keeps raw event counts. For time surfaces,
-    ``{tau_ms: 50}`` makes older events fade over 50 milliseconds. The editor
-    explains the setting for the currently selected representation before editing.
-    Options must match that representation; EventCV reports invalid options.
+    Dropdown with two choices: ``Events`` (default) and ``Reconstruction``.
+    Events uses the format owned by the method: counts for LENS, SparseEvent and
+    EventVLAD, polarity counts for SpikeVPR, MCTS for Event-GeM, and red/blue
+    images for the image adapters. Users do not choose low-level formats or options.
+    Reconstruction streams E2VID intensity images instead.
 
 ``hot_pixel_filter``
     Apply EventCV's recording-level hot-pixel filtering before representation
@@ -55,17 +41,13 @@ Runtime settings
     adapters. Zero retains every window. Direct descriptor adapters retain every
     window. This is temporal sampling, not a ground truth distance tolerance.
 
-``reconstruction``
-    Disabled for now. The editor shows this in grey and rejects edits; the CLI
-    and runner also reject reconstruction. Named reconstruction methods and
-    their defaults will be incorporated after EventCV supports them.
-
-Pretrained networks require fixed input channels. Adapters average channel groups
-when reducing channels and repeat channels when expanding them. Image consumers
-receive uint8 grayscale/RGB; SpikeVPR receives two channels (resized to its trained
-346×260 input), and Event-GeM receives ten channels. These conversions make all
-representations usable; they do not guarantee the accuracy of the training
-representation. Descriptor/result cache paths include rendering settings.
+Reconstruction requires an EventCV build exposing ``E2VID``. Local weights at
+``e2vid/e2vid.safetensors`` are preferred; otherwise EventCV fetches its default
+weights. Each recording gets fresh recurrent state. Skipped windows are processed
+in order, retaining the configured time-window alignment with ground truth.
+Older ONNX-only builds fail with an explicit upgrade message. Reconstructed images
+are adapted to the model's channel count; this alternative input does not imply
+compatibility with its training distribution. Cache paths distinguish both modes.
 
 Example
 -------
@@ -75,22 +57,22 @@ Example
    gps_tolerance: 25.0
    filter_places_sec: 0
    timewindows: [50, 100, 200]
-   representation: polarity
-   representation_options: {}
+   representation: Events
    hot_pixel_filter: true
-   reconstruction: {} # Disabled pending named EventCV methods
 
 Terminal workbench
 ------------------
 
 Launch ``pixi run tui`` to inspect and edit runtime or baseline-specific settings.
-The home screen includes the Event-LAB Team, repository, and reference paper.
+The home screen includes the EventLAB Team, repository, and reference paper.
 Home is the single entry point: choose Run an experiment, Manage downloads,
 Edit configuration, View activity, or View results with Up/Down and Enter,
 a mouse click, or 1–5.
 Escape or the Home button returns here without clearing your selections.
-The centered menu and animated ASCII wordmark share the workspaces' coral/cyan
-theme. Logo animation pauses while you work in another screen.
+The centered home menu uses ink-dark surfaces, cool white text, fine borders,
+magenta highlights, and subtle static background grain. The animated ASCII
+wordmark retains its coral/cyan event-stream colors. The introduction identifies
+EventLAB - Localization. Logo animation pauses while another workspace is open.
 
 Within experiments, Left/Right cycles only through Methods, Datasets, and
 Trajectories. Within downloads, it cycles between baseline assets and recordings.
@@ -185,7 +167,7 @@ this scan. For VPR methods whose model cache cannot be verified locally, the
 entry remains orange; the tooltip explains missing or unverified assets.
 Checkboxes independently select methods to download or update.
 
-Before running or preparing a baseline, Event-LAB fetches its configured Git
+Before running or preparing a baseline, EventLAB - Localization fetches its configured Git
 upstream and fast-forwards the existing external checkout under ``baselines/``.
 The Activity log (or CLI output) reports the old/new commit, already-current
 status, or why an update was skipped. Required submodules are synchronised to
@@ -206,7 +188,7 @@ The filename is ``config.yaml``. Running ``pixi run config`` displays its conten
 Options use the exact YAML key names, including underscores::
 
    pixi run config --timewindows 100 200 300
-   pixi run config --representation voxel --representation_options '{bins: 5}'
+   pixi run config --representation Events
    pixi run config --gps_tolerance 3.5 --filter_places_sec 0.5
    pixi run config --help
 

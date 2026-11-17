@@ -64,6 +64,9 @@ def render_png_sequence(hdf5_path, out_dir, *, timewindow_ms, offset_ms=None,
     os.makedirs(out_dir, exist_ok=True)
     reader = open_reader(hdf5_path, timewindow_ms, offset_ms, sensor_size, config)
     n_slices = int(reader.n_slices)
+    # Window manifests are already one window per place; thinning would desync GT.
+    if getattr(reader, 'fixed_places', False):
+        min_gap_sec = 0
     kept = kept_place_indices(n_slices, timewindow_ms, min_gap_sec)
     if not kept:
         raise ValueError(

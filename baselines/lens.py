@@ -34,7 +34,7 @@ class LENS_baseline(EventBaseline):
         self.matrix_type = 'similarity' # options are 'similarity' or 'distance'
 
     def _open_reader(self, hdf5_path, timewindow, offset):
-        return open_reader(hdf5_path, timewindow, offset, config=self.config)
+        return open_reader(hdf5_path, timewindow, offset, config=self.config, event_representation='count')
 
     @staticmethod
     def _frame_to_uint8(frame):
@@ -48,7 +48,8 @@ class LENS_baseline(EventBaseline):
         dataloader expects. Returns the number of places written.
         """
         n_slices = int(reader.n_slices)
-        kept = kept_place_indices(n_slices, timewindow, min_gap_sec)
+        # Window manifests are already one window per place; thinning would desync GT.
+        kept = kept_place_indices(n_slices, timewindow, 0 if getattr(reader, 'fixed_places', False) else min_gap_sec)
         if len(kept) <= 0:
             raise ValueError(
                 f"No frames available for LENS input (n_slices={n_slices}, "

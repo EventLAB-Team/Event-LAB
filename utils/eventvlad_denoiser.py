@@ -238,6 +238,7 @@ def main():
         args.hdf5_path,
         timewindow_ms=args.dt_ms,
         offset_ms=args.offset,
+        event_representation="count",
     )
     n_slices = int(reader.n_slices)
 

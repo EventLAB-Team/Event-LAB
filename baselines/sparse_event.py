@@ -59,8 +59,8 @@ class sparse_event_baseline(EventBaseline):
                 dataset_config['other']['offset_time_scale'])
 
         # Open reference and query into EventCV
-        reference = open_reader(ref_info['hdf5_path'], timewindow, ref_offset, config=config)
-        query = open_reader(query_info['hdf5_path'], timewindow, qry_offset, config=config)
+        reference = open_reader(ref_info['hdf5_path'], timewindow, ref_offset, config=config, event_representation='count')
+        query = open_reader(query_info['hdf5_path'], timewindow, qry_offset, config=config, event_representation='count')
 
         def frames(reader):
             for idx in range(reader.n_slices):

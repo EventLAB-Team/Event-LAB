@@ -6,6 +6,7 @@ import pytest
 
 from utils.configuration import CONFIG, FIELDS, parse_value, read_config, update_config
 from utils.experiments import Queue, expand_batch
+from utils.terminal_theme import COMPLETE, MISSING, PARTIAL
 
 
 def batch():
@@ -469,7 +470,7 @@ def test_review_enter_runs_once_and_back_cancels(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_home_centered_and_animation_pauses_in_workspace():
+def test_home_dashboard_animation_and_compact_layout():
     from eventlab_tui import EventLabApp
     from utils.terminal_widgets import EventLogo
     async def scenario():
@@ -489,10 +490,16 @@ def test_home_centered_and_animation_pauses_in_workspace():
             await pilot.press('escape')
             await pilot.pause(.5)
             assert logo.phase != phase
+            assert '█████' in str(logo.render())
+            assert 'Localization' in str(app.query_one('#intro').render())
+            assert not list(app.query('#dashboard-summary'))
             assert app.focused.id == 'home-menu'
             await pilot.resize_terminal(80, 24)
             await pilot.pause()
             assert app.query_one('#brand').region.y >= 0
+            # The taller two-line wordmark makes small terminals scroll naturally.
+            app.query_one('#home-scroll').scroll_end(animate=False)
+            await pilot.pause()
             assert app.query_one('#credits').region.bottom <= 23
             menu = app.query_one('#home-menu')
             assert menu.virtual_size.height <= menu.scrollable_content_region.height
@@ -563,7 +570,7 @@ def test_tui_banner_is_compact(tmp_path, monkeypatch, capsys):
     try:
         start('lens', 'brisbane_event')
         output = capsys.readouterr().out
-        assert 'Event-LAB · lens · brisbane_event' in output
+        assert 'EventLAB - Localization · lens · brisbane_event' in output
         assert '█' not in output
     finally:
         logger.remove()
@@ -754,7 +761,7 @@ def test_dataset_folder_enter_saves_and_scans_without_save_button(tmp_path):
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize('available,color', [(0, '#ff718f'), (7, '#f5b45b'), (9, '#6dd79a')])
+@pytest.mark.parametrize('available,color', [(0, MISSING), (7, PARTIAL), (9, COMPLETE)])
 def test_dataset_counts_show_availability_independent_of_selection(available, color):
     from eventlab_tui import EventLabApp
     from utils.terminal_widgets import SelectionList
@@ -777,10 +784,10 @@ def test_dataset_counts_show_availability_independent_of_selection(available, co
             app.render_download_groups()
             label = next(label for label, name in listing.items if name == 'nsavp')
             assert label.plain == 'nsavp (0/9)'
-            assert label.style == '#f5b45b'
+            assert label.style == PARTIAL
             app.download_dataset = 'nsavp'
             app.render_download_recordings()
-            assert app.query_one('#download-sequences', SelectionList).items[0][0].style == '#f5b45b'
+            assert app.query_one('#download-sequences', SelectionList).items[0][0].style == PARTIAL
     asyncio.run(scenario())
 
 
@@ -798,8 +805,8 @@ def test_baseline_availability_colors_do_not_select_downloads(monkeypatch):
             assert not listing.selected
             labels = {name: label for label, name in listing.items}
             assert labels['lens'].plain == 'lens (2/2)'
-            assert labels['lens'].style == '#6dd79a'
-            assert labels['eventgem'].style == '#f5b45b'
+            assert labels['lens'].style == COMPLETE
+            assert labels['eventgem'].style == PARTIAL
             await pilot.press('space')
             assert listing.selected == ['lens']
             assert listing.items[0][0].plain == 'lens (2/2)'
@@ -843,33 +850,14 @@ def test_representation_dropdown_is_visible_and_opens_with_enter(tmp_path, monke
             dropdown = app.screen.query_one('#value-input', Select)
             assert dropdown.expanded
             option_list = dropdown.query_one(OptionList)
-            assert option_list.get_option_at_index(len(app.field_choices('representation')) - 1).disabled
-            await pilot.press('end')
-            assert option_list.highlighted == len(app.field_choices('representation')) - 2
-            await pilot.press('home', 'down', 'enter')
+            assert app.field_choices('representation') == ('Events', 'Reconstruction')
+            assert not option_list.get_option_at_index(1).disabled
+            await pilot.press('end', 'enter')
             await pilot.pause()
-            assert app.pending['representation'] == 'binary'
-            assert table.get_cell_at((row, 1)).endswith(' ▾')
-            assert 'Dropdown' not in table.get_cell_at((row, 1))
+            assert app.pending['representation'] == 'Reconstruction'
             await pilot.press('ctrl+s')
-            assert read_config(config)['representation'] == 'binary'
-            table.move_cursor(row=app.field_keys.index('representation_options'))
-            await pilot.pause()
-            await pilot.click('#field-docs')
-            assert opened == ['https://docs.eventcv.net/en/latest/api.html#eventcv.EventReader.with_repr']
-            table.focus()
-            await pilot.press('enter')
-            await pilot.pause()
-            assert app.screen.query_one(Input).value == '{}'
-            assert 'reader.with_repr()' in app.field_description('representation_options')
-            assert app.screen.query_one('#options-docs', Link).url == 'https://docs.eventcv.net/en/latest/api.html#eventcv.EventReader.with_repr'
-            await pilot.press('escape')
-            table.move_cursor(row=app.field_keys.index('reconstruction'))
-            await pilot.press('enter')
-            assert len(app.screen_stack) == 1
-            cell = table.get_cell_at((app.field_keys.index('reconstruction'), 1))
-            assert cell.style == 'dim'
-            assert 'Unavailable' in cell.plain
+            assert read_config(config)['representation'] == 'Reconstruction'
+            assert 'representation_options' not in app.field_keys
     asyncio.run(scenario())
 
 

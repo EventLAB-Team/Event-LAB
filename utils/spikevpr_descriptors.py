@@ -100,7 +100,8 @@ def main():
     device = resolve_device(args.device)
     logger.info(f"SpikeVPR descriptors: {args.hdf5_path} -> {args.out} (device={device})")
 
-    reader = open_reader(args.hdf5_path, args.dt_ms, args.offset, sensor_size)
+    reader = open_reader(args.hdf5_path, args.dt_ms, args.offset, sensor_size,
+                         event_representation='polarity', event_options={'normalize': False})
     n_slices = int(reader.n_slices)
     logger.info(f"{n_slices} slices at dt_ms={args.dt_ms}")
 

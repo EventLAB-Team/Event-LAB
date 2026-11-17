@@ -2,6 +2,7 @@
 import eventcv as ecv
 
 from datasets.prepare import DatasetFiles
+from utils.event_windows import is_manifest, resolve_windows
 
 
 class EventDataset(DatasetFiles):
@@ -10,6 +11,21 @@ class EventDataset(DatasetFiles):
         self.timewindow_list = list(config['timewindows'])
 
     def get_dataset_info(self):
+        if is_manifest(self.dataset_raw):
+            # Window manifests pool many recordings; report the resolved windows instead.
+            windows = resolve_windows(self.dataset_raw, self.timewindow_list[0])
+            duration = len(windows) * self.timewindow_list[0] / 1000
+            return {
+                'dataset_name': self.dataset_name,
+                'sequence_name': self.sequence_name,
+                'hdf5_path': self.dataset_raw,
+                'events_count': None,
+                'sensor_resolution': windows.sensor_size,
+                'time_range': (0.0, duration * 1000),
+                'duration_seconds': duration,
+                'event_rate': None,
+                'windows': len(windows),
+            }
         reader = ecv.open(self.dataset_raw,
                           sensor_size=tuple(self.data_config['dataset']['resolution']))
         start, end = reader.time_span_ms

@@ -1,7 +1,7 @@
 Contributing Datasets
 =====================
 
-Add a dataset when Event-LAB can download the raw event data and describe each
+Add a dataset when EventLAB - Localization can download the raw event data and describe each
 sequence in a YAML file. The Brisbane configuration is the clearest complete
 example.
 
@@ -41,7 +41,7 @@ Ground truth
 ------------
 
 If ground truth files are available, set ``ground_truth.available`` to ``true``
-and provide the download URL. Event-LAB will download the files and build the
+and provide the download URL. EventLAB - Localization will download the files and build the
 reference/query ground truth matrix during a run.
 
 If a dataset does not provide ground truth files, leave the URL empty and set
@@ -54,3 +54,17 @@ Adding the dataset to defaults
 After adding the dataset YAML, add an entry to the ``datasets`` list in
 ``config.yaml`` only if you want ``pixi run getdata config.yaml`` to prepare it
 by default.
+
+Datasets built from many recordings
+-----------------------------------
+
+When a sequence is not one recording (for example, a gallery pooled from many
+sessions, or a held-out set of places), set ``format.data.format`` to
+``"windows"`` and add a module ``datasets/<dataset_name>.py`` with a
+``prepare(config, data_config, sequence)`` function. It downloads what the
+sequence needs and writes ``<data_path>/<dataset>/<sequence>/<sequence>.windows.json``
+with ``utils.event_windows.write_manifest``: the recordings, their GPS tracks and
+clocks, and either ``tiles`` (consecutive windows) or ``anchors`` (explicit
+window centres). Baselines read the manifest like any recording, and ground
+truth is computed from each window's GPS position. ``datasets/springfield_event.py``
+and ``datasets/nyc_event.py`` are complete examples.

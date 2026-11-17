@@ -1,0 +1,42 @@
+---
+# Springfield-Event-VPR (Hines, Milford, Fischer, arXiv:2609.21219)
+# Reference is the pooled database gallery; queries are the windows in queries/query_slices.csv.
+# Recordings are ~810 GiB in total (database ~700 GiB). See datasets/springfield_event.py.
+dataset:
+  name: springfield_event
+  version: "1.0.0"
+  description: "Multi-viewpoint walking VPR in Springfield, Queensland: seven database traversals (front, left, right) and day/dawn query passes, Prophesee EVK4 with synchronised GPS"
+  base_url: "https://huggingface.co/datasets/AdamHines/springfield-event-vpr"
+  camera: "prophesee_evk4"
+  resolution: [1280, 720]  # Width, Height
+
+# Sequences are assembled from many recordings into window manifests, so they have no
+# single data URL. Run: pixi run eventlab <baseline> springfield_event database queries
+sequences:
+  database:
+    data: {url: ""}
+    ground_truth: {available: true, url: ""}
+    hot_pixel: {available: false, url: ""}
+  queries:      # day + dawn, 5,557 windows (paper Table II)
+    data: {url: ""}
+    ground_truth: {available: true, url: ""}
+    hot_pixel: {available: false, url: ""}
+  query_day:    # 3,169 windows
+    data: {url: ""}
+    ground_truth: {available: true, url: ""}
+    hot_pixel: {available: false, url: ""}
+  query_dawn:   # 2,388 windows
+    data: {url: ""}
+    ground_truth: {available: true, url: ""}
+    hot_pixel: {available: false, url: ""}
+
+format:
+  data:
+    format: "windows"
+    timestamp_val: "us"
+    time_scale: 1e-6
+  ground_truth: "gps"
+  hot_pixel: ""
+
+other:
+  repo: "AdamHines/springfield-event-vpr"

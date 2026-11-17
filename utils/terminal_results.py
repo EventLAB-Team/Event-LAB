@@ -8,6 +8,7 @@ from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, OptionList, Select, Static
 
 from utils.results import discover_results, export_plot, preview
+from utils.terminal_theme import eyebrow
 
 
 class ResultList(OptionList):
@@ -18,13 +19,14 @@ class ResultList(OptionList):
 class ResultsBrowser(Vertical):
     DEFAULT_CSS = """
     ResultsBrowser { height: 1fr; }
-    #result-list { height: 5; border: round $primary; padding: 0 1; }
+    #result-list { height: 5; border: solid $rule; padding: 0 1; border-title-color: $muted; border-title-align: left; }
+    #result-list:focus { border: solid $cyan 80%; border-title-color: $foreground; }
     #result-controls { height: 3; align-vertical: middle; }
     #result-kind { width: 24; height: 1; margin-right: 1; }
     #result-controls Button { width: auto; min-width: 8; padding: 0 1; }
-    #result-info { height: auto; max-height: 3; color: #a5b4ce; }
-    #result-preview { height: 1fr; border: round #35425c; padding: 0 1; }
-    #result-preview:focus { border: round $primary; }
+    #result-info { height: auto; max-height: 3; color: $muted; }
+    #result-preview { height: 1fr; border: solid $rule; padding: 0 1; }
+    #result-preview:focus { border: solid $cyan 80%; }
     #result-plot { height: auto; }
     """
 
@@ -56,7 +58,7 @@ class ResultsBrowser(Vertical):
         listing = self.query_one('#result-list', OptionList)
         listing.clear_options()
         listing.add_options([Text(e['label'], no_wrap=True, overflow='ellipsis') for e in entries])
-        listing.border_title = f'Saved experiments · {len(entries)}'
+        listing.border_title = f'{eyebrow("Saved experiments")}  [#626368]{len(entries):02d}[/]'
         self.query_one('#open-result', Button).disabled = not entries
         if entries:
             listing.highlighted = 0

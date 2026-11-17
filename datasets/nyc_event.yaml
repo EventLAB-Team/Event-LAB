@@ -1,0 +1,36 @@
+---
+# NYC-Event-VPR (Pan et al., ICRA 2025): raw Prophesee EVK4 drives in New York City.
+# Protocol: a seeded random 10% of places (GPS fixes) are queries, the other 90% the
+# reference. Raw archives total ~400 GiB and are extracted locally; see datasets/nyc_event.py.
+dataset:
+  name: nyc_event
+  version: "1.0.0"
+  description: "Large-scale urban driving VPR in New York City, Prophesee EVK4 with RTK-GPS; random 10% place hold-out as queries"
+  base_url: "https://huggingface.co/datasets/ai4ce/NYC-Event-VPR"
+  camera: "prophesee_evk4"
+  resolution: [1280, 720]  # Width, Height
+
+# Run: pixi run eventlab <baseline> nyc_event database queries
+sequences:
+  database:
+    data: {url: ""}
+    ground_truth: {available: true, url: ""}
+    hot_pixel: {available: false, url: ""}
+  queries:
+    data: {url: ""}
+    ground_truth: {available: true, url: ""}
+    hot_pixel: {available: false, url: ""}
+
+format:
+  data:
+    format: "windows"
+    timestamp_val: "us"
+    time_scale: 1e-6
+  ground_truth: "gps"
+  hot_pixel: ""
+
+other:
+  repo: "ai4ce/NYC-Event-VPR"
+  query_fraction: 0.1
+  seed: 0
+  keep_archives: false   # delete each downloaded .zip once its .raw files are extracted

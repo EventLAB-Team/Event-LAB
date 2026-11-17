@@ -7,7 +7,7 @@ Baselines are selected by command name:
 
    pixi run eventlab <baseline> <dataset> <reference> <query>
 
-Event-LAB downloads or prepares the selected baseline, formats the reference
+EventLAB - Localization downloads or prepares the selected baseline, formats the reference
 and query data, runs the method, then evaluates the saved distance or similarity
 matrix against the ground truth.
 
@@ -50,7 +50,7 @@ Baseline configuration
 
 Baseline-specific settings live beside each baseline wrapper, for example
 ``baselines/sparse_event.yaml`` and ``baselines/eventvlad.yaml``. These files
-control method settings, while ``config.yaml`` controls shared Event-LAB
+control method settings, while ``config.yaml`` controls shared EventLAB - Localization
 settings such as time windows and EventCV representations.
 
 Outputs
@@ -63,7 +63,7 @@ evaluation summary to:
 
    output/eventlab_results.xlsx
 
-For each baseline run, Event-LAB expects one or more ``.npy`` matrices in the
+For each baseline run, EventLAB - Localization expects one or more ``.npy`` matrices in the
 baseline output directory. Distance matrices use lower values for better
 matches; similarity matrices use higher values for better matches. The baseline
 wrapper declares which type it produces before metrics are calculated.

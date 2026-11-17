@@ -18,14 +18,14 @@ def representation_tag(config):
     settings = {key: config.get(key) for key in (
         'representation', 'representation_options', 'hot_pixel_filter',
         'filter_places_sec', 'timewindows', 'gps_tolerance', 'data_path')}
-    if config.get('representation') == 'reconstruction':
-        settings['reconstruction'] = config.get('reconstruction', {})
-        model = ROOT / Path(settings['reconstruction'].get('model', '')).expanduser()
+    settings['input_pipeline_version'] = 2
+    if config.get('representation') == 'Reconstruction':
+        model = ROOT / 'e2vid' / 'e2vid.safetensors'
         if model.is_file():
             stat = model.stat()
             settings['model_version'] = (str(model.resolve()), stat.st_size, stat.st_mtime_ns)
     digest = hashlib.sha256(json.dumps(settings, sort_keys=True).encode()).hexdigest()[:10]
-    return f"{config.get('representation', 'polarity')}-{digest}"
+    return f"{config.get('representation', 'Events')}-{digest}"
 
 
 def channels(frame, count):
@@ -100,8 +100,58 @@ class ReconstructionReader:
         return (self.slice(i) for i in range(self.n_slices))
 
 
-def open_reader(path, timewindow_ms, offset_ms=None, sensor_size=None, config=None):
+class ManifestReader:
+    """Reader over a window manifest: slice ``i`` is window ``i`` of the resolved sequence.
+
+    Exposes the subset of EventCV's reader interface the baselines use (``n_slices``,
+    ``slice``, ``batch``, ``windows``, ``sensor_size``). Windows are explicit places, so
+    ``fixed_places`` tells frame thinning (``filter_places_sec``) to leave them alone.
+    """
+    fixed_places = True
+    MAX_OPEN = 4
+
+    def __init__(self, path, timewindow_ms, open_file):
+        from utils.event_windows import resolve_windows
+
+        self.path = str(path)
+        self.windows_table = resolve_windows(self.path, timewindow_ms)
+        self.n_slices = len(self.windows_table)
+        self.sensor_size = self.windows_table.sensor_size
+        self._open_file, self._readers = open_file, {}
+
+    def _reader(self, file):
+        if file not in self._readers:
+            if len(self._readers) >= self.MAX_OPEN:
+                self._readers.pop(next(iter(self._readers)))
+            self._readers[file] = self._open_file(self.windows_table.files[file])
+        return self._readers[file]
+
+    def slice(self, index):
+        if index < 0:
+            index += self.n_slices
+        if not 0 <= index < self.n_slices:
+            raise IndexError(index)
+        table = self.windows_table
+        return self._reader(int(table.file_index[index])).slice(
+            t0_us=int(table.start_us[index]), t1_us=int(table.end_us[index]))
+
+    def __getitem__(self, index):
+        return self.slice(index)
+
+    def batch(self, indices):
+        return np.stack([np.asarray(self.slice(i).numpy()) for i in indices])
+
+    def windows(self):
+        return (self.slice(i) for i in range(self.n_slices))
+
+    def __getstate__(self):
+        return {**self.__dict__, '_readers': {}}
+
+
+def open_reader(path, timewindow_ms, offset_ms=None, sensor_size=None, config=None,
+                *, event_representation='redblue', event_options=None):
     import eventcv as ecv
+    from utils.event_windows import is_manifest
 
     config = runtime_config() if config is None else config
     validate_runtime(config)
@@ -110,14 +160,25 @@ def open_reader(path, timewindow_ms, offset_ms=None, sensor_size=None, config=No
         kwargs['offset'] = offset_ms
     if sensor_size is not None:
         kwargs['sensor_size'] = tuple(sensor_size)
-    reader = ecv.open(str(path), **kwargs)
-    name = config.get('representation', 'polarity')
-    if name != 'reconstruction':
-        return reader.with_repr(name, **config.get('representation_options', {}))
-    reconstruction = config['reconstruction']
-    reader = reader.with_repr(reconstruction.get('input_representation', 'voxel'),
-                              **reconstruction.get('input_options', {'bins': 5}))
-    # StatefulModel also handles a stateless graph with an empty state map.
-    model = ecv.StatefulModel(ecv.Model(str(ROOT / Path(reconstruction['model']).expanduser())),
-                              state_map=reconstruction.get('state_map', {}))
+    name = config.get('representation', 'Events')
+    if name == 'Reconstruction' and not hasattr(ecv, 'E2VID'):
+        raise RuntimeError('Reconstruction requires an EventCV build with E2VID support. '
+                           'The installed EventCV only supports ONNX reconstruction.')
+    if is_manifest(path):
+        # Each window names its own file and absolute time span; offsets do not apply.
+        kwargs.pop('offset', None)
+        def open_file(file):
+            file_reader = ecv.open(str(file), **{**kwargs, 'sensor_size': tuple(manifest.sensor_size)})
+            return file_reader.with_repr(event_representation, **(event_options or {})) \
+                if name == 'Events' else file_reader
+        manifest = ManifestReader(path, timewindow_ms, open_file)
+        reader = manifest
+    else:
+        reader = ecv.open(str(path), **kwargs)
+    if name == 'Events':
+        return reader if is_manifest(path) else reader.with_repr(event_representation, **(event_options or {}))
+    weights = ROOT / 'e2vid' / 'e2vid.safetensors'
+    model = ecv.E2VID(str(weights)) if weights.is_file() else ecv.E2VID()
+    # Feed raw event windows to E2VID, which owns voxelization and recurrent state.
+    # Keep the experiment's time windows so frames remain aligned with ground truth.
     return ReconstructionReader(reader, model)

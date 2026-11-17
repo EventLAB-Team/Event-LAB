@@ -6,9 +6,25 @@ from urllib.parse import unquote
 from datasets.download_data import download_sequence_data, download_file
 
 
+WINDOWS_FORMAT = 'windows'
+
+
+def uses_windows(data_config):
+    """Sequences assembled from many recordings by a dataset module (see utils.event_windows)."""
+    return data_config['format']['data']['format'] == WINDOWS_FORMAT
+
+
+def windows_manifest_path(config, dataset_name, sequence_name):
+    return Path(config['data_path']) / dataset_name / sequence_name / f'{sequence_name}.windows.json'
+
+
 def sequence_download_status(config, data_config, dataset_name, sequence_name):
     """Inspect final files only; no network requests, parsing, or dataset construction."""
     folder = Path(config['data_path']) / dataset_name / sequence_name
+    if uses_windows(data_config):
+        if windows_manifest_path(config, dataset_name, sequence_name).is_file():
+            return 'Downloaded'
+        return 'Partial' if (Path(config['data_path']) / dataset_name / 'raw').exists() else 'Missing'
     sequence = data_config['sequences'][sequence_name]
     assets = [(folder / f"{sequence_name}.{data_config['format']['data']['format']}", sequence['data']['url'])]
     ground_truth = sequence['ground_truth']
@@ -43,6 +59,15 @@ class DatasetFiles:
                                     )
         # Create dataset directory
         os.makedirs(self.dataset_path, exist_ok=True)
+
+        if uses_windows(self.data_config):
+            # A dataset module downloads the recordings and writes the window manifest.
+            import importlib
+            module = importlib.import_module(f'datasets.{dataset_name}')
+            self.dataset_raw = str(windows_manifest_path(config, dataset_name, sequence_name))
+            if not os.path.isfile(self.dataset_raw):
+                module.prepare(config, self.data_config, sequence_name)
+            return
 
         self.dataset_raw = os.path.join(self.dataset_path,f"{self.sequence_name}.{self.data_config['format']['data']['format']}")
 

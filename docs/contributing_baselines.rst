@@ -1,7 +1,7 @@
 Contributing Baselines
 ======================
 
-A baseline wrapper adapts an external method to Event-LAB's standard
+A baseline wrapper adapts an external method to EventLAB - Localization's standard
 reference/query pipeline. Start from ``baselines/baseline_template.py``, then
 compare against ``baselines/sparse_event.py`` for an in-process baseline or
 ``baselines/eventvlad.py`` for a baseline that prepares data and model weights.
@@ -53,7 +53,7 @@ Wrapper methods
 Result matrices
 ---------------
 
-Event-LAB evaluates two-dimensional matrices shaped as reference places by query
+EventLAB - Localization evaluates two-dimensional matrices shaped as reference places by query
 places. Set ``self.matrix_type`` to ``distance`` when lower values are better,
 or ``similarity`` when higher values are better.
 

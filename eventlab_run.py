@@ -9,7 +9,7 @@ from datasets.groundtruths import generate_ground_truth
 from utils.configuration import validate_runtime
 
 def main():
-    parser = argparse.ArgumentParser(description='Run an Event-LAB experiment')
+    parser = argparse.ArgumentParser(description='Run an EventLAB - Localization experiment')
     for name in ('baseline', 'dataset', 'reference', 'query'):
         parser.add_argument(name)
     parser.add_argument('--config', default='config.yaml')

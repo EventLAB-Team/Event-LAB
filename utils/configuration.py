@@ -11,20 +11,16 @@ from ruamel.yaml import YAML
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG = ROOT / 'config.yaml'
 REPRESENTATION_DOCS = 'https://docs.eventcv.net/en/latest/api.html#eventcv.EventReader.with_repr'
-RECONSTRUCTION_UNAVAILABLE = 'Reconstruction is unavailable until named methods are supported by EventCV.'
 # (type, minimum, choices, help). Names deliberately match the YAML keys.
-REPRESENTATIONS = ('polarity', 'binary', 'count', 'voxel', 'tsurf', 'atsurf',
-                   'tencode', 'redblue', 'countmask', 'mcts', 'flow', 'reconstruction')
+REPRESENTATIONS = ('Events', 'Reconstruction')
 FIELDS = {
     'data_path': (str, None, None, 'Dataset directory'),
     'request_input': (bool, None, None, 'Ask before downloading in the CLI'),
     'gps_tolerance': (float, 0, None, 'Ground truth tolerance in metres along the reference route'),
     'filter_places_sec': (float, 0, None, 'Minimum separation in seconds for image-folder adapters'),
     'timewindows': (list, 1, None, 'Positive integer time windows in milliseconds'),
-    'representation': (str, None, REPRESENTATIONS, 'Choose how EventCV turns events into model inputs; polarity is the default'),
-    'representation_options': (dict, None, None, f'EventCV representation parameters passed to reader.with_repr(). {{}} uses defaults. Docs: {REPRESENTATION_DOCS}'),
+    'representation': (str, None, REPRESENTATIONS, 'Events uses the method’s native input format; Reconstruction uses E2VID images.'),
     'hot_pixel_filter': (bool, None, None, 'Filter hot pixels before rendering'),
-    'reconstruction': (dict, None, None, RECONSTRUCTION_UNAVAILABLE),
 }
 
 
@@ -77,8 +73,6 @@ def write_config(path, value):
 
 def parse_value(key, text, current=None, runtime=True):
     if runtime:
-        if key == 'reconstruction' or (key == 'representation' and text == 'reconstruction'):
-            raise ValueError(RECONSTRUCTION_UNAVAILABLE)
         if key not in FIELDS:
             raise ValueError(f'Unknown runtime field: {key}')
         kind, minimum, choices, _ = FIELDS[key]
@@ -177,11 +171,11 @@ def main(argv=None):
 
 def validate_runtime(config):
     for key in FIELDS:
-        if key in config and key != 'reconstruction':
+        if key in config:
             value = config[key]
             parse_value(key, value if isinstance(value, str) else dumps(value).strip().removesuffix('\n...'))
-    retired = {'std_format', 'max_frames', 'chunk_size', 'stream', 'num_events',
+    retired = {'representation_options', 'std_format', 'max_frames', 'chunk_size', 'stream', 'num_events',
                'frame_generator', 'frame_accumulator', 'reconstruction_model', 'ground_truth_tolerance'}
     if retired.intersection(config):
         raise ValueError(f"Retired configuration settings: {', '.join(sorted(retired.intersection(config)))}. "
-                         'Use representation, representation_options and gps_tolerance (metres).')
+                         'Use representation: Events or Reconstruction; methods select their own event format.')

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 from rich.text import Text
+from utils.terminal_theme import CYAN, FAINT, MAGENTA, MUTED, RULE_STRONG
 
 
 def save_details(directory, rows, curves, matrix_type):
@@ -125,15 +126,15 @@ def preview(entry, kind, width=64, height=12):
         if not finite.size:
             return Text('No finite matrix values are available.')
         low, high = finite.min(), finite.max()
-        palette = ['#172239', '#243e5c', '#315b7c', '#3d819a', '#4aafbf', '#56dce8', '#b3f4ee', '#ff718f']
+        palette = ['#000000', '#1a0816', '#36102e', '#5a1a4e', '#86246f', '#b83296', '#f84fcc', '#ffb3ea']
         levels = np.clip((np.nan_to_num(values, nan=low, posinf=high, neginf=low) - low)
                          / (high - low or 1) * (len(palette) - 1), 0, len(palette) - 1).astype(int)
-        text.append(f'{shape[0]:,} references × {shape[1]:,} queries · sampled preview\n', '#a5b4ce')
+        text.append(f'{shape[0]:,} references × {shape[1]:,} queries · sampled preview\n', MUTED)
         for row in levels:
             for level in row:
                 text.append(' ', f'on {palette[level]}')
             text.append('\n')
-        text.append('Rows: reference · Columns: query · Dark → bright: closer match')
+        text.append('Rows: reference · Columns: query · Dark → bright: closer match', FAINT)
     elif kind == 'pr':
         points = [(r, p) for r, p in zip(entry['recall'], entry['precision'])
                   if r is not None and p is not None and np.isfinite(r) and np.isfinite(p)]
@@ -144,24 +145,28 @@ def preview(entry, kind, width=64, height=12):
             x = round(np.clip(recall, 0, 1) * (width - 1))
             y = round((1 - np.clip(precision, 0, 1)) * (height - 1))
             grid[y][x] = '●'
-        text.append('Precision\n', 'bold')
+        text.append('Precision\n', f'bold {CYAN}')
         for y, row in enumerate(grid):
-            text.append(('1.0' if y == 0 else '0.0' if y == height - 1 else '   ') + ' │', '#a5b4ce')
-            text.append(''.join(row) + '\n', '#56dce8')
-        text.append('    └' + '─' * width + '\n     0' + ' ' * (width - 2) + '1\n     Recall →')
+            text.append(('1.0' if y == 0 else '0.0' if y == height - 1 else '   ') + ' │', FAINT)
+            text.append(''.join(row) + '\n', MAGENTA)
+        text.append('    └' + '─' * width + '\n     0' + ' ' * (width - 2) + '1\n     Recall →', FAINT)
     else:
         metrics = entry['metrics']
         if not metrics:
             return Text('No matching Recall@K evaluation is saved. The matrix can still be viewed.')
-        text.append('Recall@K\n\n', 'bold #56dce8')
+        text.append('Recall@K\n\n', f'bold {CYAN}')
         for key in ('R@1', 'R@5', 'R@10', 'R@15', 'R@20', 'R@25'):
             value = metrics.get(key)
             if value is not None:
-                bars = round(np.clip(value, 0, 1) * min(30, width - 15))
-                text.append(f'{key:5}  {value:6.1%}  ', 'bold')
-                text.append('━' * bars + '\n', '#56dce8')
+                track = min(30, width - 15)
+                bars = round(np.clip(value, 0, 1) * track)
+                text.append(f'{key:5}', MUTED)
+                text.append(f'  {value:6.1%}  ', 'bold')
+                text.append('━' * bars, MAGENTA)
+                text.append('─' * (track - bars) + '\n', RULE_STRONG)
         area = metrics.get('aupr')
-        text.append(f'\nAUPR  {area:.4f}' if area is not None else '\nAUPR unavailable')
+        text.append('\nAUPR ', MUTED)
+        text.append(f' {area:.4f}' if area is not None else ' unavailable', 'bold' if area is not None else FAINT)
     return text
 
 

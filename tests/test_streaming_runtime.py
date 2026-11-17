@@ -73,19 +73,20 @@ def test_runner_regenerates_ground_truth_and_cleans_up(tmp_path, monkeypatch, fa
                           ('gt', 100, 2.75), ('format', 100), ('run',), ('cleanup',)]
 
 
-def test_reconstruction_is_blocked_before_opening_recordings(monkeypatch):
+def test_missing_e2vid_support_fails_before_opening_recordings(monkeypatch):
     ecv = pytest.importorskip('eventcv')
     from utils.representations import open_reader
     def fail(*args, **kwargs):
         raise AssertionError('Disabled reconstruction must not open a recording')
     monkeypatch.setattr(ecv, 'open', fail)
-    with pytest.raises(ValueError, match='Reconstruction is unavailable'):
+    monkeypatch.delattr(ecv, 'E2VID', raising=False)
+    with pytest.raises(RuntimeError, match='E2VID support'):
         open_reader('recording.h5', 50, config={
-            'representation': 'reconstruction', 'reconstruction': {'model': 'model.onnx'}})
+            'representation': 'Reconstruction', 'reconstruction': {'model': 'model.onnx'}})
 
 
 @pytest.mark.parametrize('name', ['lens', 'ensemble', 'vprmethods', 'eventvlad', 'spikevpr', 'megaevent', 'eventgem', 'sparse_event'])
-def test_adapter_preparation_accepts_configured_voxel(tmp_path, name):
+def test_adapter_preparation_uses_method_native_events(tmp_path, name):
     import eventcv as ecv
     # Skip constructors (repository updates / pretrained weight downloads).
     from baselines import lens, ensemble, vprmethods, eventvlad, spikevpr, megaevent, eventgem, sparse_event
@@ -96,7 +97,7 @@ def test_adapter_preparation_accepts_configured_voxel(tmp_path, name):
     recording = tmp_path / 'events.h5'
     ecv.save(ecv.from_numpy(np.array([[1, 1, 0, 1], [2, 2, 20000, 0]], dtype=float),
                            sensor_size=(8, 8), time_unit='us'), str(recording))
-    config = {'representation': 'voxel', 'representation_options': {'bins': 5},
+    config = {'representation': 'Events',
               'hot_pixel_filter': False, 'timewindows': [10], 'data_path': str(tmp_path / 'recordings')}
     dataset_config = {'dataset': {'name': 'fixture', 'resolution': [8, 8]}}
     def data(sequence):
@@ -107,7 +108,7 @@ def test_adapter_preparation_accepts_configured_voxel(tmp_path, name):
     adapter.baseline_config = {'use_saliency': True, 'num_target_pixels': 1}
     try:
         adapter.format_data(config, dataset_config, data('ref'), data('qry'), 10)
-        assert 'voxel-' in adapter.output_dir
+        assert 'Events-' in adapter.output_dir
         assert not Path(config['data_path']).exists() # No stored frame tree in the dataset directory.
         temporary = getattr(adapter, 'temp_dir', None)
     finally:

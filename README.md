@@ -1,7 +1,7 @@
-# Event-LAB: Towards Standardized Evaluation of Neuromorphic Localization Methods
+# EventLAB - Localization
 
 <p align="center">
-  <img src="./assets/logo.gif" alt="Event-LAB logo" width="220"/>
+  <img src="./assets/logo.gif" alt="EventLAB - Localization logo" width="220"/>
 </p>
 
 ![Read the Docs](https://img.shields.io/badge/Read%20the%20Docs-%23000000?style=for-the-badge&logo=readthedocs&logoColor=white)
@@ -10,20 +10,20 @@
 [![Pixi Badge](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/prefix-dev/pixi/main/assets/badge/v0.json)](https://pixi.sh)
 [![QUT Centre for Robotics](https://img.shields.io/badge/collection-QUT%20Robotics-%23043d71?style=flat-square)](https://qcr.ai)
 [![stars](https://img.shields.io/github/stars/EventLAB-Team/Event-LAB.svg?style=flat-square)](https://github.com/EventLAB-Team/Event-LAB/stargazers)
-[![GitHub repo size](https://img.shields.io/github/repo-size/EventLAB-Team/Event-LAB.svg?style=flat-square)](./README.md)
+[![GitHub repo size](https://img.shields.io/github/repo-size/EventLAB-Team/EventLAB - Localization.svg?style=flat-square)](./README.md)
 ![Python](https://img.shields.io/badge/python-3670A0?style=for-the-badge&logo=python&logoColor=ffdd54)
 ![macOS](https://img.shields.io/badge/mac%20os-000000?style=for-the-badge&logo=macos&logoColor=F0F0F0)
 ![Ubuntu](https://img.shields.io/badge/Ubuntu-E95420?style=for-the-badge&logo=ubuntu&logoColor=white)
 ![Windows](https://img.shields.io/badge/Windows-0078D6?style=for-the-badge&logo=windows&logoColor=white)
 [![Open in Spaces](https://huggingface.co/datasets/huggingface/badges/resolve/main/open-in-hf-spaces-md.svg)](https://huggingface.co/spaces/EventLAB/EventLAB)
 
-**Event-LAB** is a framework for easy, reliable evaluation of event-based localization methods across standardized datasets and pipelines.
-Using **single command-line invocation**, multiple different event-based methods can be implemented. See the [Event-LAB documentation](https://event-lab.readthedocs.io/en/latest/) for further details.
+**EventLAB - Localization** is a framework for easy, reliable evaluation of event-based localization methods across standardized datasets and pipelines.
+Use the **interactive terminal dashboard** to prepare data, configure experiments, and explore results. Command-line workflows remain available for scripting and HPC. See the [EventLAB - Localization documentation](https://event-lab.readthedocs.io/en/latest/) for further details.
 
 If you use this code in your work, please **cite our paper** (see [License and Citation](#license-and-citation)) and consider giving the repo a star! ⭐
 
 ## Quick start :dizzy:
-Event-LAB uses [Pixi](https://prefix.dev/docs/pixi/overview) by prefix.dev to manage packages and dependencies to achieve bit-for-bit reproducibility. Follow the instructions below to get started with Event-LAB.
+EventLAB - Localization uses [Pixi](https://prefix.dev/docs/pixi/overview) by prefix.dev to manage packages and dependencies to achieve bit-for-bit reproducibility. Follow the instructions below to get started with EventLAB - Localization.
 
 ### Installation :package:
 If not already installed, [install Pixi](https://prefix.dev/docs/pixi/overview#installation) for your operating system by running the following command in your terminal:
@@ -43,18 +43,24 @@ Download this reposistory and navigate to the project directory by running the f
 git clone git@github.com:EventLAB-Team/Event-LAB.git && cd Event-LAB
 ```
 
+### Open the dashboard
+
+```console
+pixi run tui
+```
+
 ### Run the demonstration :rocket:
-That's it! You're ready to run Event-LAB, try it now with the demonstration by running the following command in your terminal:
+That's it! You're ready to run EventLAB - Localization, try it now with the demonstration by running the following command in your terminal:
 ```console
 pixi run demo
 ```
 
-## Using Event-LAB
-Using simple command-line invocation, Event-LAB is designed to easily mix and match localization methods and datasets. To use Event-LAB, we simply run `pixi run eventlab <baseline_method> <dataset> <reference> <query>` in the command terminal. This triggers a series of processes starting from downloading the dataset and baseline, generating event frames, and then running the method to return Recall@1 and Precision-Recall metrics.
+## Using EventLAB - Localization
+Using simple command-line invocation, EventLAB - Localization is designed to easily mix and match localization methods and datasets. To use EventLAB - Localization, we simply run `pixi run eventlab <baseline_method> <dataset> <reference> <query>` in the command terminal. This triggers a series of processes starting from downloading the dataset and baseline, generating event frames, and then running the method to return Recall@1 and Precision-Recall metrics.
 
 ### Terminal workbench
 
-Run `pixi run tui` for an EventCV-inspired terminal interface. Edit runtime and
+Run `pixi run tui` for the ink-dark localization dashboard with magenta accents. Edit runtime and
 baseline configuration, select baselines/datasets with checkboxes, choose reference
 and query sequences, and save or run experiment batches. The Downloads screen
 prepares code, model weights, recordings, and ground truth without running inference.
@@ -105,27 +111,29 @@ pixi run eventlab sparse_event brisbane_event sunset2 sunrise
 pixi run eventlab ensemble nsavp R0_FS0 F0_FA0 
 ```
 
-Event-LAB downloads recordings, streams the selected representation through EventCV, and writes results to an `.xlsx` spreadsheet for further analysis.
+EventLAB - Localization downloads recordings, streams the selected representation through EventCV, and writes results to an `.xlsx` spreadsheet for further analysis.
 
 ### Modify the configuration
-Parameters for generating event frames in Event-LAB are controlled using the `config.yaml` file in the main project directory:
+Parameters for generating event frames in EventLAB - Localization are controlled using the `config.yaml` file in the main project directory:
 ```yaml
 # EventCV streaming parameters
 timewindows: [33, 66, 99, 120] # Milliseconds
-representation: polarity
-representation_options: {} # EventCV reader.with_repr() parameters; {} uses defaults
+representation: Events
 hot_pixel_filter: true
 gps_tolerance: 25.0 # Metres along the reference route
 ```
-Every baseline uses the chosen EventCV representation. Recordings are streamed;
-image-only methods use temporary images that are deleted after the run. Model
-adapters average or repeat channels to fit pretrained inputs, so changing the
-representation can change accuracy. See the [EventCV representation parameters](https://docs.eventcv.net/en/latest/api.html#eventcv.EventReader.with_repr)
-for `representation_options`; these configure `reader.with_repr()`.
-Reconstruction is disabled until named methods are available in EventCV.
+Choose **Events** or **Reconstruction**. In Events mode each method selects its own
+input format (for example, counts for LENS, polarity counts for SpikeVPR, and MCTS
+for Event-GeM). Reconstruction streams E2VID intensity images, keeping recurrent
+state and the configured time windows aligned with ground truth. It requires an
+EventCV build exposing `E2VID`; older ONNX-only builds report an upgrade error.
+Local `e2vid/e2vid.safetensors` weights are used when present; otherwise EventCV
+fetches its default weights. Image-only methods use temporary images deleted after
+the run. Reconstruction is an alternative input experiment and does not imply a
+method was trained on reconstructed images.
 
 ### Batch run experiments
-It is often required and useful to run a variety of baseline methods and datasets across a standardized set of parameters. Event-LAB allows users to easily set-up and batch numerous experiments to run in series. The `batch_config.yaml` file in the main project directory can be set up to customize implementations:
+It is often required and useful to run a variety of baseline methods and datasets across a standardized set of parameters. EventLAB - Localization allows users to easily set-up and batch numerous experiments to run in series. The `batch_config.yaml` file in the main project directory can be set up to customize implementations:
 ```yaml
 # Batch experiment parameters
 batch_experiments:
@@ -134,7 +142,7 @@ batch_experiments:
     queries: [sunrise]
     baselines: [eventvlad, ensemble]
     config:
-      representation: polarity
+      representation: Events
       timewindows: [33, 66, 120, 250]
 ```
 The above will run 3 baseline methods across 4 different time windows. Then to run the evaluation we simply run the following in the command terminal:
@@ -163,6 +171,8 @@ For the demonstration version of the repository, we have implemented two baselin
 | NSAVP | [umautobots.github.io/nsavp](https://umautobots.github.io/nsavp) | `nsavp` |
 | Fast-and-Slow | [QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets](https://huggingface.co/datasets/QVPR/QCR-Fast-Slow-Event-Dataset-Raw-Parquets) | `fast_slow` |
 | QCR-Event-VPR | [Zenodo record 10494919](https://zenodo.org/records/10494919) | `qcr_event` |
+| Springfield-Event-VPR | [AdamHines/springfield-event-vpr](https://huggingface.co/datasets/AdamHines/springfield-event-vpr) | `springfield_event` |
+| NYC-Event-VPR | [ai4ce/NYC-Event-VPR](https://huggingface.co/datasets/ai4ce/NYC-Event-VPR) | `nyc_event` |
 
 Any combination of implemented baseline methods, datasets and their traverses can be set-up for a reference/query pair to evaluate performance.
 

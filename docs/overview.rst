@@ -1,7 +1,7 @@
 Contributing Overview
 =====================
 
-Event-LAB contributions should keep the shared pipeline simple: datasets define
+EventLAB - Localization contributions should keep the shared pipeline simple: datasets define
 where data comes from, baselines define how a method runs, and ``config.yaml``
 defines the shared experiment settings.
 
@@ -19,12 +19,12 @@ Repository conventions
 
 ``datasets/``
     Dataset YAML files and dataset loading helpers. A dataset YAML should be
-    enough for Event-LAB to download, format, and generate frames for a
+    enough for EventLAB - Localization to download, format, and generate frames for a
     sequence.
 
 ``baselines/``
     Baseline wrappers and baseline-specific YAML files. A wrapper should adapt
-    one method to Event-LAB's reference/query evaluation flow.
+    one method to EventLAB - Localization's reference/query evaluation flow.
 
 ``docs/``
     Read the Docs source files. Keep pages short, command-focused, and close to

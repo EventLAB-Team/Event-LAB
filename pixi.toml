@@ -1,7 +1,7 @@
 [workspace]
-name = "Event-LAB"
+name = "eventlab-localization"
 version = "1.1.0"
-description = "Event-based localization methods benchmarking toolkit"
+description = "EventLAB - Localization: event-based localization benchmarking"
 channels = ["conda-forge", "robostack-noetic"]
 platforms = [
     { name = "linux-64-cuda12", platform = "linux-64", cuda = "12" },

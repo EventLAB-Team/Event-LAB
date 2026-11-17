@@ -4,7 +4,7 @@ import sys
 # Allows Sphinx autodoc to import your package from the project root.
 sys.path.insert(0, os.path.abspath(".."))
 
-project = "Event-LAB"
+project = "EventLAB - Localization"
 author = "Adam D Hines"
 copyright = "2026, Adam D Hines"
 
