@@ -21,6 +21,8 @@ FIELDS = {
     'timewindows': (list, 1, None, 'Positive integer time windows in milliseconds'),
     'representation': (str, None, REPRESENTATIONS, 'Events uses the method’s native input format; Reconstruction uses E2VID images.'),
     'hot_pixel_filter': (bool, None, None, 'Filter hot pixels before rendering'),
+    'live_max_event_rate': (float, 0, None, 'Live camera: on-chip event-rate ceiling in events/s (0 disables)'),
+    'live_adaptive_bias': (bool, None, None, 'Live camera: hold the event rate with adaptive biasing (Nair et al., IROS 2024)'),
 }
 
 

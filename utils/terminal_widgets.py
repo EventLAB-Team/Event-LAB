@@ -1,5 +1,6 @@
 """Compact terminal controls with explicit keyboard and selection states."""
 import math
+import os
 import random
 
 from rich.text import Text
@@ -13,6 +14,7 @@ from textual.widgets import OptionList, DataTable, Input, Static, Select, Link
 from textual.widgets.option_list import Option
 from textual.screen import ModalScreen
 from textual.containers import Vertical, VerticalScroll
+from textual.widget import Widget
 
 from utils.terminal_theme import (BLACK, CYAN, DIM, EVENT_OFF, EVENT_ON, FAINT, FG, MAGENTA, MUTED, RULE,
                                   eyebrow)
@@ -104,7 +106,7 @@ class HomeMenu(OptionList):
 class SectionTabs(Static):
     """Uppercase section tabs over a hairline; the active one is underlined in magenta."""
     TABS = (('configuration', 'Configure'), ('experiments', 'Experiments'), ('downloads', 'Downloads'),
-            ('logs', 'Activity'), ('results', 'Results'))
+            ('logs', 'Activity'), ('results', 'Results'), ('live', 'Live'))
     GAP = 4
 
     def __init__(self, **kwargs):
@@ -407,3 +409,157 @@ class EventField(VerticalScroll):
         if cursor < width:
             segments.append(Segment(grain[cursor:], self.style('#1a1a1e', None)))
         return Strip(segments, width)
+
+
+class PixelView(Widget):
+    """An RGB image, fitted to the widget with its aspect kept and centred.
+
+    In Kitty it is real pixels, as `eventcv tui` draws them: each `show` uploads the image once,
+    deflated, at its own resolution, with a virtual placement the size of the view, and the view's
+    cells are Kitty's Unicode placeholders, coloured with the image id. The terminal does the
+    scaling, so a frame costs one small upload rather than a styled cell per pixel pair. Three ids
+    take turns, so each frame replaces one the screen is no longer showing. Elsewhere (or inside
+    tmux, whose passthrough this does not wrap) it falls back to half blocks.
+    `show(image)` takes an (H, W, 3) uint8 array, or None to clear.
+    """
+    DEFAULT_CSS = 'PixelView { height: 1fr; width: 1fr; background: $background; }'
+    _views = 0
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.image, self.fitted, self.fitted_for = None, None, None
+        self._styles = {}
+        self.kitty = KITTY_GRAPHICS
+        base = 0x00ec0001 + 3 * PixelView._views
+        PixelView._views += 1
+        self.ids, self.turn, self.placed = [base, base + 1, base + 2], 0, None
+
+    def show(self, image):
+        self.image, self.fitted_for = image, None
+        self.placed = None
+        if self.kitty and image is not None and self.size.width and self.size.height:
+            self.transmit()
+        self.refresh()
+
+    def on_resize(self):
+        if self.image is not None:
+            self.show(self.image)
+
+    def on_unmount(self):
+        if self.kitty:
+            self.write(''.join(f'\x1b_Ga=d,d=I,i={image_id},q=2\x1b\\' for image_id in self.ids))
+
+    def write(self, sequence):
+        try:
+            self.app._driver.write(sequence)
+            return True
+        except Exception:  # no terminal (tests, headless): draw half blocks instead
+            self.kitty = False
+            return False
+
+    def placement(self):
+        """Cells (columns, rows) the image fills, and its offset, for cells twice as tall as wide."""
+        width, height = self.size.width, self.size.height
+        h, w = self.image.shape[:2]
+        columns, rows = width, max(1, round(width * h / w / 2))
+        if rows > height:
+            rows, columns = height, max(1, round(height * 2 * w / h))
+        return columns, min(rows, len(KITTY_DIACRITICS)), (width - columns) // 2, (height - rows) // 2
+
+    def transmit(self):
+        import base64
+        import zlib
+
+        import numpy as np
+
+        columns, rows, left, top = self.placement()
+        image_id = self.ids[self.turn % len(self.ids)]
+        self.turn += 1
+        h, w = self.image.shape[:2]
+        # Fast deflate: the frames are mostly black, so it costs little and runs every frame.
+        payload = base64.standard_b64encode(zlib.compress(np.ascontiguousarray(self.image, np.uint8).tobytes(), 1))
+        chunks = [payload[i:i + 4096] for i in range(0, len(payload), 4096)] or [b'']
+        sequence = []
+        for index, chunk in enumerate(chunks):
+            keys = (f'i={image_id},a=T,U=1,f=24,o=z,t=d,s={w},v={h},c={columns},r={rows},'
+                    if index == 0 else '')
+            sequence.append(f'\x1b_Gq=2,{keys}m={int(index + 1 < len(chunks))};{chunk.decode()}\x1b\\')
+        if self.write(''.join(sequence)):
+            self.placed = (image_id, columns, rows, left, top)
+
+    def fit(self):
+        import numpy as np
+
+        key = (id(self.image), self.size.width, self.size.height)
+        if self.fitted_for == key:
+            return self.fitted
+        width, height = self.size.width, self.size.height * 2
+        h, w = self.image.shape[:2]
+        scale = min(width / w, height / h)
+        fw, fh = max(1, int(w * scale)), max(2, int(h * scale) // 2 * 2)
+        rows = np.minimum((np.arange(fh) / scale).astype(int), h - 1)
+        cols = np.minimum((np.arange(fw) / scale).astype(int), w - 1)
+        small = (self.image[rows][:, cols] >> 3) << 3
+        self.fitted = (small, (width - fw) // 2, (height - fh) // 4)
+        self.fitted_for = key
+        return self.fitted
+
+    def style(self, top, bottom):
+        key = (top, bottom)
+        if key not in self._styles:
+            self._styles[key] = Style(color='#%02x%02x%02x' % top, bgcolor='#%02x%02x%02x' % bottom)
+        return self._styles[key]
+
+    def render_line(self, y):
+        width, background = self.size.width, self.rich_style
+        if self.image is None:
+            return Strip.blank(width, background)
+        if self.placed:
+            image_id, columns, rows, left, top = self.placed
+            row = y - top
+            if not 0 <= row < rows:
+                return Strip.blank(width, background)
+            # The first cell names its row (then column 0 and the id's top byte, 0 for these ids);
+            # Kitty infers the columns after it.
+            first = KITTY_PLACEHOLDER + chr(KITTY_DIACRITICS[row]) + chr(KITTY_DIACRITICS[0]) * 2
+            colour = Style(color='#%06x' % (image_id & 0xffffff), bgcolor=background.bgcolor)
+            return Strip([Segment(' ' * left, background),
+                          Segment(first + KITTY_PLACEHOLDER * (columns - 1), colour)],
+                         width).extend_cell_length(width, background)
+        small, left, top_row = self.fit()
+        row = y - top_row
+        if not 0 <= row < small.shape[0] // 2:
+            return Strip.blank(width, background)
+        upper, lower = small[2 * row], small[2 * row + 1]
+        segments, run, start = [], None, 0
+        for x in range(small.shape[1] + 1):
+            pair = (tuple(upper[x]), tuple(lower[x])) if x < small.shape[1] else None
+            if pair != run:
+                if run is not None:
+                    segments.append(Segment('▀' * (x - start), self.style(*run)))
+                run, start = pair, x
+        return Strip([Segment(' ' * left, background)] + segments, width).extend_cell_length(width, background)
+
+
+# Kitty's graphics protocol, as `eventcv tui` uses it. EVENTLAB_GRAPHICS=kitty|halfblocks overrides
+# the detection.
+KITTY_GRAPHICS = (os.environ.get('EVENTLAB_GRAPHICS') == 'kitty' or (
+    os.environ.get('EVENTLAB_GRAPHICS') != 'halfblocks' and 'TMUX' not in os.environ
+    and (os.environ.get('TERM') == 'xterm-kitty' or 'KITTY_WINDOW_ID' in os.environ)))
+KITTY_PLACEHOLDER = '\U0010EEEE'
+# The row/column diacritics, `rowcolumn-diacritics.txt` from Kitty's graphics protocol (the n-th
+# marks row or column n), as eventcv's tui/pixels.rs copies them from ratatui-image (MIT).
+KITTY_DIACRITICS = (
+    0x0305, 0x030D, 0x030E, 0x0310, 0x0312, 0x033D, 0x033E, 0x033F, 0x0346, 0x034A, 0x034B, 0x034C,
+    0x0350, 0x0351, 0x0352, 0x0357, 0x035B, 0x0363, 0x0364, 0x0365, 0x0366, 0x0367, 0x0368, 0x0369,
+    0x036A, 0x036B, 0x036C, 0x036D, 0x036E, 0x036F, 0x0483, 0x0484, 0x0485, 0x0486, 0x0487, 0x0592,
+    0x0593, 0x0594, 0x0595, 0x0597, 0x0598, 0x0599, 0x059C, 0x059D, 0x059E, 0x059F, 0x05A0, 0x05A1,
+    0x05A8, 0x05A9, 0x05AB, 0x05AC, 0x05AF, 0x05C4, 0x0610, 0x0611, 0x0612, 0x0613, 0x0614, 0x0615,
+    0x0616, 0x0617, 0x0657, 0x0658, 0x0659, 0x065A, 0x065B, 0x065D, 0x065E, 0x06D6, 0x06D7, 0x06D8,
+    0x06D9, 0x06DA, 0x06DB, 0x06DC, 0x06DF, 0x06E0, 0x06E1, 0x06E2, 0x06E4, 0x06E7, 0x06E8, 0x06EB,
+    0x06EC, 0x0730, 0x0732, 0x0733, 0x0735, 0x0736, 0x073A, 0x073D, 0x073F, 0x0740, 0x0741, 0x0743,
+    0x0745, 0x0747, 0x0749, 0x074A, 0x07EB, 0x07EC, 0x07ED, 0x07EE, 0x07EF, 0x07F0, 0x07F1, 0x07F3,
+    0x0816, 0x0817, 0x0818, 0x0819, 0x081B, 0x081C, 0x081D, 0x081E, 0x081F, 0x0820, 0x0821, 0x0822,
+    0x0823, 0x0825, 0x0826, 0x0827, 0x0829, 0x082A, 0x082B, 0x082C, 0x082D, 0x0951, 0x0953, 0x0954,
+    0x0F82, 0x0F83, 0x0F86, 0x0F87, 0x135D, 0x135E, 0x135F, 0x17DD, 0x193A, 0x1A17, 0x1A75, 0x1A76,
+)

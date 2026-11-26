@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import sys
+import threading
+import time
 
 from rich.text import Text
 from textual import on, work
@@ -22,7 +24,9 @@ from utils.configuration import (BASELINE_CHOICES, CONFIG, FIELDS, ROOT, dumps, 
 from utils.experiments import Queue, catalog, expand_batch
 from utils.terminal_output import TerminalOutput
 from utils.terminal_widgets import (SelectionList, RoleTable, ValueEditor, CompactTable, HomeMenu, EventLogo,
-                                    EventField, Panel, SectionTabs)
+                                    EventField, Panel, PixelView, SectionTabs)
+from utils.live_vpr import (LIVE_DATASET, LIVE_METHODS, LiveWorker, ReferenceView, clean_name, delete_recording,
+                            recording_path, recordings, register, render)
 from utils.terminal_theme import COMPLETE, CYAN, FAINT, MISSING, MUTED, PARTIAL, eventlab_theme, eyebrow
 from utils.terminal_results import ResultsBrowser
 
@@ -30,7 +34,7 @@ REPOSITORY = 'https://github.com/EventLAB-Team/Event-LAB'
 PAPER = 'https://arxiv.org/abs/2509.14516'
 DATASET_LABELS = {'brisbane_event': 'Brisbane Event', 'gardens_point_event': 'Gardens Point',
                   'fast_slow': 'Fast & Slow', 'nsavp': 'NSAVP', 'qcr_event': 'QCR Event',
-                  'springfield_event': 'Springfield', 'nyc_event': 'NYC Event'}
+                  'springfield_event': 'Springfield', 'nyc_event': 'NYC Event', LIVE_DATASET: 'Live recordings'}
 
 
 class Confirm(ModalScreen[bool]):
@@ -110,7 +114,7 @@ class EventLabApp(App):
     #welcome { width: 100%; max-width: 72; height: auto; }
     #brand { height: 11; width: 100%; }
     #intro { height: auto; margin: 1 0; color: $dim; }
-    #home-menu { height: 12; background: $elevated; border: solid $rule-strong; padding: 0 1;
+    #home-menu { height: 14; background: $elevated; border: solid $rule-strong; padding: 0 1;
                  border-title-color: $faint; border-title-align: left;
                  border-subtitle-color: $faint; border-subtitle-align: right; }
     #home-menu:focus { border: solid $rule-strong; border-title-color: $cyan; }
@@ -192,6 +196,16 @@ class EventLabApp(App):
     #dialog { width: 80%; max-width: 100; height: auto; max-height: 80%; border: solid $rule-strong;
               background: $elevated; padding: 1 2; border-title-color: $primary; border-title-style: bold; border-title-align: left; }
     #dialog > VerticalScroll { height: auto; max-height: 1fr; }
+    #live-side { width: 34; }
+    #live-side Input { margin-bottom: 1; }
+    #live-side Button { width: 100%; margin: 0 0 1 0; }
+    #live-references { height: 1fr; border: solid $rule; }
+    #live-references:focus { border: solid $cyan 80%; }
+    #live-method { margin-bottom: 1; }
+    #live-ref-buttons { height: 1; margin-bottom: 1; }
+    #live-ref-buttons Button { width: 1fr; margin: 0 1 0 0; }
+    #live-camera-status, #live-match-status { height: 2; color: $muted; }
+    #live-progress { height: auto; color: $primary; }
     #value-dialog { width: 64; max-width: 95%; height: auto; border: solid $rule-strong; padding: 1 2;
                     background: $elevated; border-title-color: $cyan; border-title-align: left; }
     """
@@ -226,8 +240,22 @@ class EventLabApp(App):
         self.download_states = {}
         self.download_root = None
         self.download_selection = set()
-        self.download_dataset = next(iter(self.datasets), None)
+        self.download_dataset = next(iter(self.download_datasets), None)
         self.download_config_stamp = None
+        # Live section: the camera thread owns the device and the window hand-off; the UI only posts
+        # requests to it (`record_request`), which it applies by reopening the camera.
+        self.camera_stop = threading.Event()
+        self.camera_running = False
+        self.record_request = None
+        self.recording_name = None
+        self.live_pending = None
+        self.live_places = None
+        self.live_windows = None
+        self.review, self.review_name, self.review_index = None, None, 0
+        self.localiser = None
+        self.live_reference = None
+        self.reference_view = None
+        self.live_place = None
         self.register_theme(eventlab_theme())
         self.theme = 'eventlab'
 
@@ -248,6 +276,7 @@ class EventLabApp(App):
                             HomeMenu.item(3, 'Edit configuration', 'Review runtime and baseline configuration.'),
                             HomeMenu.item(4, 'View activity', 'Follow progress and inspect experiment logs.'),
                             HomeMenu.item(5, 'View results', 'Explore matrices, PR curves and Recall@K.'),
+                            HomeMenu.item(6, 'Live localisation', 'Record references and localise with a camera.'),
                             id='home-menu')
                         yield Static(Text.assemble(
                             ('Towards Standardized Evaluation of Neuromorphic Localization Methods\n', MUTED),
@@ -298,7 +327,8 @@ class EventLabApp(App):
                         yield SelectionList(*[(n, n) for n in self.baselines], id='download-baselines')
                         yield Button('Select all', id='all-download-baselines', classes='selection-all')
                     with Panel(2, 'Datasets', classes='column'):
-                        yield SelectionList(*[(name, name) for name in self.datasets], id='download-datasets')
+                        yield SelectionList(*[(name, name) for name in self.download_datasets],
+                                            id='download-datasets')
                         yield Button('Select all', id='all-download-datasets', classes='selection-all')
                     with Panel(3, 'Recordings', classes='column'):
                         yield SelectionList(id='download-sequences')
@@ -315,7 +345,38 @@ class EventLabApp(App):
                     yield Button('Cancel queue', id='cancel', variant='error', disabled=True)
             with TabPane('Results', id='results'):
                 yield ResultsBrowser(ROOT / 'output')
+            with TabPane('Live', id='live'):
+                yield Static('Record a reference with the camera, then localise against it: the method maps the '
+                             'reference once, then matches every live window. No ground truth.', classes='workspace-intro')
+                with Horizontal(classes='columns'):
+                    with Panel(1, 'Camera', classes='column'):
+                        yield PixelView(id='live-view')
+                        yield Static('Camera off', id='live-camera-status', markup=False)
+                    with Panel(2, 'Closest place', classes='column'):
+                        yield PixelView(id='live-match')
+                        yield Static('Choose a reference and a method, then Localise.', id='live-match-status',
+                                     markup=False)
+                    with Panel(3, 'Session', classes='column', id='live-side'):
+                        yield Input(placeholder='Reference name', id='live-name')
+                        yield Button('● Record', id='live-record', variant='primary')
+                        yield OptionList(id='live-references')
+                        with Horizontal(id='live-ref-buttons'):
+                            yield Button('View', id='live-view-ref',
+                                         tooltip='Scrub through the recording: ←→ window, shift ←→ second')
+                            yield Button('Delete', id='live-delete-ref', variant='error')
+                        yield Select([(name, name) for name in LIVE_METHODS], value=next(iter(LIVE_METHODS)),
+                                     allow_blank=False, id='live-method')
+                        yield Input(placeholder='Places: every window', id='live-places', type='integer',
+                                    tooltip='Map only this many places, evenly spaced in time through the '
+                                            'reference. Blank: every window is a place. Applies at Localise.')
+                        yield Button('Localise', id='live-localise')
+                        yield Static('', id='live-progress', markup=False)
         yield Footer()
+
+    @property
+    def download_datasets(self):
+        """Datasets that can be downloaded: everything but the live recordings, which are local."""
+        return {name: sequences for name, sequences in self.datasets.items() if name != LIVE_DATASET}
 
     async def on_mount(self):
         await self.load_fields(self.edit_path)
@@ -325,6 +386,7 @@ class EventLabApp(App):
         self.last_progress = ''
         self.set_interval(.1, self.flush_logs)
         self.set_interval(1, self.check_download_config)
+        self.set_interval(.05, self.show_live_frame)
         self.query_one('#fields').border_title = eyebrow('Settings')
         self.log_display.border_title = eyebrow('Output')
         self.query_one('#home-menu').focus()
@@ -533,7 +595,7 @@ class EventLabApp(App):
     def selection_changed(self, event):
         listing = event.selection_list
         if listing.id == 'download-datasets':
-            for name, sequences in self.datasets.items():
+            for name, sequences in self.download_datasets.items():
                 keys = {(name, seq) for seq in sequences}
                 if name in listing.selected:
                     self.download_selection.update(keys)
@@ -542,7 +604,7 @@ class EventLabApp(App):
             self.render_download_groups()
             self.render_download_recordings()
         elif listing.id == 'download-sequences':
-            self.download_selection.difference_update({(self.download_dataset, seq) for seq in self.datasets[self.download_dataset]})
+            self.download_selection.difference_update({(self.download_dataset, seq) for seq in self.download_datasets[self.download_dataset]})
             self.download_selection.update(listing.selected)
             self.render_download_groups()
         self.query_one('#all-' + listing.id, Button).label = (
@@ -613,11 +675,17 @@ class EventLabApp(App):
     @on(TabbedContent.TabActivated)
     def section_changed(self, event):
         targets = {'home': '#home-menu', 'configuration': '#fields', 'experiments': '#baselines',
-                   'downloads': '#download-baselines', 'logs': '#log', 'results': '#result-list'}
+                   'downloads': '#download-baselines', 'logs': '#log', 'results': '#result-list',
+                   'live': '#live-name'}
         if event.pane.id == 'results':
             self.query_one(ResultsBrowser).refresh_results()
         elif event.pane.id == 'downloads':
             self.refresh_downloads()
+        if event.pane.id == 'live':
+            self.refresh_references()
+            self.start_camera()
+        elif not (self.recording_name or self.localiser):
+            self.camera_stop.set()  # leave the device free unless the Live section is using it
         self.query_one(SectionTabs).show(event.pane.id)
         self.query_one('#topbar').display = event.pane.id != 'home'
         for animated in (self.query_one(EventLogo), self.query_one(EventField)):
@@ -632,7 +700,8 @@ class EventLabApp(App):
 
     @on(OptionList.OptionSelected, '#home-menu')
     def home_selected(self, event):
-        self.query_one('#tabs', TabbedContent).active = ['experiments', 'downloads', 'configuration', 'logs', 'results'][event.option_index]
+        self.query_one('#tabs', TabbedContent).active = ['experiments', 'downloads', 'configuration', 'logs', 'results',
+                                                         'live'][event.option_index]
 
     def check_action(self, action, parameters):
         if not self.is_mounted:
@@ -643,6 +712,8 @@ class EventLabApp(App):
         section = self.query_one('#tabs', TabbedContent).active
         if action == 'home' and section == 'home':
             return False
+        if action == 'home' and section == 'live' and self.review is not None:
+            return False  # Esc closes the recording viewer instead
         if action in ('save_config', 'reload') and section != 'configuration':
             return False
         if action == 'review' and section != 'experiments':
@@ -654,7 +725,8 @@ class EventLabApp(App):
         ids = {'experiments': ['baselines', 'datasets', 'trajectories'],
                'downloads': ['download-baselines', 'download-datasets', 'download-sequences'],
                'configuration': ['fields'], 'home': ['home-menu'], 'logs': ['log'],
-               'results': ['result-list', 'result-kind', 'result-preview']}[section]
+               'results': ['result-list', 'result-kind', 'result-preview'],
+               'live': ['live-name', 'live-references', 'live-method', 'live-places']}[section]
         available = [self.query_one('#' + name) for name in ids if not self.query_one('#' + name).disabled]
         if available:
             index = available.index(self.focused) if self.focused in available else (-1 if direction > 0 else 0)
@@ -662,14 +734,19 @@ class EventLabApp(App):
 
     def action_section(self, direction):
         tabs = self.query_one('#tabs', TabbedContent)
-        names = ['home', 'configuration', 'experiments', 'downloads', 'logs', 'results']
+        names = ['home', 'configuration', 'experiments', 'downloads', 'logs', 'results', 'live']
         tabs.active = names[(names.index(tabs.active) + direction) % len(names)]
 
     def on_key(self, event):
         if len(self.screen_stack) > 1 or isinstance(self.focused, (Input, Select)):
             return
-        if self.query_one('#tabs', TabbedContent).active == 'home' and event.key in ('1', '2', '3', '4', '5'):
-            self.query_one('#tabs', TabbedContent).active = ['experiments', 'downloads', 'configuration', 'logs', 'results'][int(event.key)-1]
+        if self.query_one('#tabs', TabbedContent).active == 'live' and self.live_key(event.key):
+            event.stop()
+            event.prevent_default()
+            return
+        if self.query_one('#tabs', TabbedContent).active == 'home' and event.key in ('1', '2', '3', '4', '5', '6'):
+            self.query_one('#tabs', TabbedContent).active = ['experiments', 'downloads', 'configuration', 'logs', 'results',
+                                                             'live'][int(event.key)-1]
             event.stop()
         elif event.key in ('left', 'right'):
             self.action_pane(1 if event.key == 'right' else -1)
@@ -734,7 +811,7 @@ class EventLabApp(App):
             config = read_config(self.config_path)
             config['data_path'] = str((ROOT / Path(os.path.expandvars(config['data_path'])).expanduser()).resolve())
             states = {}
-            for name, sequences in self.datasets.items():
+            for name, sequences in self.download_datasets.items():
                 data = read_config(ROOT / 'datasets' / f'{name}.yaml')
                 for sequence in sequences:
                     states[(name, sequence)] = sequence_download_status(config, data, name, sequence)
@@ -775,7 +852,7 @@ class EventLabApp(App):
 
     @on(OptionList.OptionHighlighted, '#download-datasets')
     def download_dataset_highlighted(self, event):
-        self.download_dataset = list(self.datasets)[event.option_index]
+        self.download_dataset = list(self.download_datasets)[event.option_index]
         self.render_download_recordings()
 
     @on(OptionList.OptionHighlighted, '#download-baselines')
@@ -793,7 +870,7 @@ class EventLabApp(App):
         name = self.download_dataset
         items = [(Text(seq, style={'Downloaded': COMPLETE, 'Partial': PARTIAL}.get(
                       self.download_states.get((name, seq)), MISSING)), (name, seq))
-                 for seq in self.datasets[name]]
+                 for seq in self.download_datasets[name]]
         changed_dataset = [i[1] for i in listing.items] != [i[1] for i in items]
         listing.items = items
         listing.selected = [key for _, key in items if key in self.download_selection]
@@ -809,7 +886,7 @@ class EventLabApp(App):
     def render_download_groups(self):
         listing = self.query_one('#download-datasets', SelectionList)
         listing.selected = []
-        for index, (name, sequences) in enumerate(self.datasets.items()):
+        for index, (name, sequences) in enumerate(self.download_datasets.items()):
             selected = sum((name, seq) in self.download_selection for seq in sequences)
             available = sum(self.download_states.get((name, seq)) == 'Downloaded' for seq in sequences)
             partial = available > 0 or any(self.download_states.get((name, seq)) == 'Partial' for seq in sequences)
@@ -818,7 +895,7 @@ class EventLabApp(App):
                 listing.selected.append(name)
             listing.items[index] = (Text(f'{name} ({available}/{len(sequences)})', style=color), name)
             listing.replace_option_prompt_at_index(index, listing.prompt(listing.items[index]))
-        self.query_one('#all-download-datasets', Button).label = 'Unselect all' if len(listing.selected) == len(self.datasets) else 'Select all'
+        self.query_one('#all-download-datasets', Button).label = 'Unselect all' if len(listing.selected) == len(self.download_datasets) else 'Select all'
 
     @on(Button.Pressed)
     async def button(self, event):
@@ -910,6 +987,323 @@ class EventLabApp(App):
             for widget in self.query('#experiments OptionList, #experiments DataTable, #experiments .selection-all'):
                 widget.disabled = False
             self.preview()
+
+
+    # ------------------------------------------------------------------ Live section
+
+    def live_window_ms(self):
+        windows = read_config(self.config_path).get('timewindows') or [50]
+        return float(windows[0])
+
+    def live_config(self):
+        return read_config(self.config_path)
+
+    def refresh_references(self, select=None):
+        listing = self.query_one('#live-references', OptionList)
+        names = recordings(self.live_config())
+        listing.clear_options()
+        listing.add_options(names)
+        if names:
+            listing.highlighted = names.index(select) if select in names else len(names) - 1
+        listing.border_title = eyebrow(f'References · {len(names)}')
+
+    def start_camera(self):
+        if not self.camera_running:
+            self.camera_running = True
+            self.camera_stop.clear()
+            self.camera_loop()
+
+    def open_camera(self):
+        """The camera as event-capture's gapless mode opens it: every window in order, under an
+        on-chip rate ceiling. It stays open for the whole session -- opening an EVK4 takes ~4 s -- so
+        recordings start and stop at once, appended window by window to an `EventSink`."""
+        import eventcv as ecv
+
+        config = self.live_config()
+        kwargs = dict(dt_ms=self.live_window_ms(), latest=False)
+        if float(config.get('live_max_event_rate') or 0) > 0:
+            kwargs['max_event_rate'] = float(config['live_max_event_rate'])
+        if config.get('live_adaptive_bias'):
+            kwargs['adaptive_bias'] = True
+        try:
+            return ecv.stream(**kwargs)
+        except Exception:
+            if 'max_event_rate' not in kwargs:
+                raise
+            kwargs.pop('max_event_rate')  # a camera without an on-chip rate controller
+            return ecv.stream(**kwargs)
+
+    @on(Input.Changed, '#live-places')
+    def places_changed(self, event):
+        text = event.value.strip()
+        self.live_places = int(text) if text.isdigit() and int(text) > 0 else None
+
+    @work(thread=True, exclusive=True, group='camera')
+    def camera_loop(self):
+        """Owns the camera: appends to the recording, feeds the localiser, and leaves the newest
+        picture in `live_pending` for the UI timer -- it never waits on drawing."""
+        import eventcv as ecv
+
+        def status(text):
+            self.call_from_thread(self.query_one('#live-camera-status', Static).update, text)
+
+        status('Opening camera…')
+        try:
+            camera = self.open_camera()
+        except Exception as error:
+            self.camera_running = False
+            status(f'No camera: {error}')
+            return
+        sink, path, started, drawn = None, None, 0.0, 0.0
+        try:
+            with camera:
+                sensor, name = tuple(camera.sensor_size), f'{camera.name} {camera.serial}'
+                window_s = self.live_window_ms() / 1000
+                while not self.camera_stop.is_set():
+                    request, self.record_request = self.record_request, None
+                    if request == 'stop' and sink:
+                        events = sink.n_events  # read first: the sink resets its count when it closes
+                        sink.finish()
+                        self.call_from_thread(self.recording_finished, path, events, sensor, name,
+                                              time.monotonic() - started)
+                        sink = None
+                    elif isinstance(request, Path):
+                        try:
+                            request.parent.mkdir(parents=True, exist_ok=True)
+                            sink, path, started = ecv.EventSink(str(request)), request, time.monotonic()
+                        except Exception as error:
+                            self.call_from_thread(self.recording_failed, str(error))
+                    window = camera.read(timeout_ms=200)
+                    if window is None:
+                        continue
+                    if sink:
+                        sink.append(window)
+                    localiser = self.localiser
+                    feed = localiser is not None and localiser.ready and not localiser.busy.is_set()
+                    now = time.monotonic()
+                    draw = now - drawn > .045  # windows land every 50 ms, a hair early or late
+                    if feed or draw:
+                        events = window.numpy()
+                        if feed:
+                            localiser.send(events, sensor)
+                        if draw:
+                            line = f'{name} · {len(events) / window_s / 1e6:.2f} Mev/s'
+                            if camera.backlog:
+                                line += f' · {camera.backlog} behind'
+                            if sink:
+                                line += f' · ● REC {now - started:.1f} s'
+                            drawn, self.live_pending = now, (render(events, sensor), line)
+        except Exception as error:
+            status(f'Camera stopped: {error}')
+        finally:
+            if sink:  # the camera stopped under an open recording: keep what was written
+                events = sink.n_events
+                sink.finish()
+                self.call_from_thread(self.recording_finished, path, events, sensor, name, time.monotonic() - started)
+            self.camera_running = False
+
+    def show_live_frame(self):
+        pending, self.live_pending = self.live_pending, None
+        if pending:
+            self.live_frame(*pending)
+
+    def live_frame(self, image, line):
+        self.query_one('#live-view', PixelView).show(image)
+        self.query_one('#live-camera-status', Static).update(line)
+
+    @on(Input.Submitted, '#live-name')
+    @on(Button.Pressed, '#live-record')
+    def toggle_recording(self):
+        button = self.query_one('#live-record', Button)
+        if self.recording_name:
+            self.record_request = 'stop'
+            button.label, button.disabled = 'Stopping…', True
+            return
+        name = clean_name(self.query_one('#live-name', Input).value)
+        if not name:
+            self.notify('Name the reference first.', severity='warning')
+            self.query_one('#live-name', Input).focus()
+            return
+        if name in recordings(self.live_config()):
+            self.notify(f'A reference called {name} already exists.', severity='warning')
+            return
+        if not self.camera_running:
+            self.notify('The camera is not running.', severity='error')
+            return
+        self.recording_name = name
+        self.record_request = recording_path(self.live_config(), name)
+        button.label, button.variant = '■ Stop recording', 'error'
+
+    def recording_finished(self, path, events, sensor, camera, seconds):
+        name = self.recording_name or path.stem
+        self.recording_name = None
+        button = self.query_one('#live-record', Button)
+        button.label, button.variant, button.disabled = '● Record', 'primary', False
+        if events == 0:
+            path.unlink(missing_ok=True)
+            self.notify(f'{name}: no events were recorded.', severity='warning')
+            return
+        register(name, sensor, camera)
+        self.datasets[LIVE_DATASET] = recordings(self.live_config())
+        self.query_one('#live-name', Input).value = ''
+        self.refresh_references(select=name)
+        self.notify(f'Saved reference {name}: {events:,} events, {seconds:.1f} s.')
+
+    def recording_failed(self, message):
+        self.recording_name = None
+        button = self.query_one('#live-record', Button)
+        button.label, button.variant, button.disabled = '● Record', 'primary', False
+        self.notify(f'Recording failed: {message}', severity='error')
+
+    def selected_reference(self):
+        listing = self.query_one('#live-references', OptionList)
+        if listing.highlighted is None:
+            return None
+        return str(listing.get_option_at_index(listing.highlighted).prompt)
+
+    def live_key(self, key):
+        """Keys of the Live section: scrubbing a recording, and Delete on the reference list."""
+        if self.review is not None:
+            per_second = max(1, round(1000 / self.live_window_ms()))
+            steps = {'left': -1, 'right': 1, 'shift+left': -per_second, 'shift+right': per_second}
+            if key in steps:
+                self.show_review(self.review_index + steps[key])
+            elif key in ('home', 'end'):
+                self.show_review(0 if key == 'home' else self.review.places - 1)
+            elif key == 'escape':
+                self.close_review()
+            else:
+                return False
+            return True
+        if key in ('delete', 'backspace') and self.focused is self.query_one('#live-references'):
+            self.delete_reference()
+            return True
+        return False
+
+    @on(Button.Pressed, '#live-view-ref')
+    def toggle_review(self):
+        if self.review is not None:
+            self.close_review()
+            return
+        name = self.selected_reference()
+        if name is None:
+            self.notify('Record or choose a reference first.', severity='warning')
+            return
+        if self.localiser:
+            self.notify('Stop localising to view a recording.', severity='warning')
+            return
+        self.review_name = name
+        self.review = ReferenceView(recording_path(self.live_config(), name), self.live_window_ms())
+        self.query_one('#live-view-ref', Button).label = 'Close'
+        view = self.query_one('#live-match', PixelView)
+        view.can_focus = True  # so the arrow keys reach the viewer rather than the reference list
+        view.focus()
+        self.show_review(0)
+
+    def show_review(self, index):
+        self.review_index = max(0, min(index, self.review.places - 1))
+        seconds = self.live_window_ms() / 1000
+        self.query_one('#live-match', PixelView).show(self.review.render(self.review_index))
+        self.query_one('#live-match-status', Static).update(
+            f'{self.review_name} · {self.review_index * seconds:.2f} s / {self.review.places * seconds:.2f} s · '
+            f'window {self.review_index + 1}/{self.review.places}\n←→ window · shift ←→ second · home/end · esc close')
+
+    def close_review(self):
+        self.review, self.review_name = None, None
+        self.query_one('#live-view-ref', Button).label = 'View'
+        view = self.query_one('#live-match', PixelView)
+        view.can_focus = False
+        view.show(None)
+        self.query_one('#live-match-status', Static).update('Choose a reference and a method, then Localise.')
+        self.query_one('#live-references').focus()
+
+    @on(Button.Pressed, '#live-delete-ref')
+    def delete_reference(self):
+        name = self.selected_reference()
+        if name is None:
+            return
+        if name == self.recording_name or (self.localiser and self.live_reference == name):
+            self.notify(f'{name} is in use; stop recording or localising first.', severity='warning')
+            return
+        path = recording_path(self.live_config(), name)
+        size = path.stat().st_size / 1e6 if path.is_file() else 0
+
+        def confirmed(accepted):
+            if not accepted:
+                return
+            if self.review_name == name:
+                self.close_review()
+            delete_recording(self.live_config(), name)
+            self.datasets[LIVE_DATASET] = recordings(self.live_config())
+            self.refresh_references()
+            self.notify(f'Deleted reference {name}.')
+
+        self.push_screen(Confirm(f'Delete reference {name}?\n\nThis removes its recording ({size:,.0f} MB) '
+                                 'and any cached descriptors.', 'Delete'), confirmed)
+
+    @on(Button.Pressed, '#live-localise')
+    def toggle_localising(self):
+        if self.localiser:
+            self.stop_localising('Stopped.')
+            return
+        if self.review is not None:
+            self.close_review()
+        listing = self.query_one('#live-references', OptionList)
+        if listing.highlighted is None:
+            self.notify('Record or choose a reference first.', severity='warning')
+            return
+        reference = str(listing.get_option_at_index(listing.highlighted).prompt)
+        method = self.query_one('#live-method', Select).value
+        path = recording_path(self.live_config(), reference)
+        self.live_reference, self.live_place = reference, None
+        self.reference_view = ReferenceView(path, self.live_window_ms())
+        self.query_one('#live-match', PixelView).show(None)
+        self.query_one('#live-match-status', Static).update(f'Mapping {reference} with {method}…')
+        self.live_windows = None
+        self.localiser = LiveWorker(method, path, self.live_window_ms(), self.live_places,
+                                    lambda message: self.call_from_thread(self.localiser_message, message))
+        button = self.query_one('#live-localise', Button)
+        button.label, button.variant = 'Stop localising', 'error'
+        self.start_camera()
+
+    def localiser_message(self, message):
+        if self.localiser is None:
+            return
+        progress = self.query_one('#live-progress', Static)
+        status = self.query_one('#live-match-status', Static)
+        method = self.localiser.method
+        if 'stage' in message:
+            progress.update(f"{method} · {message['stage']} {message['done']}/{message['total']}")
+        elif 'ready' in message:
+            self.live_windows = message['windows']
+            progress.update(f"{method} · {message['ready']} places mapped · localising")
+        elif 'best' in message:
+            best, window = message['best'], message['window']
+            places, windows = len(self.live_windows or ()) or 1, self.reference_view.places
+            if window != self.live_place and window < windows:  # redrawn only when the place changes
+                self.live_place = window
+                self.query_one('#live-match', PixelView).show(self.reference_view.render(window))
+            place = f'place {best + 1}/{places}' + (f' · window {window + 1}/{windows}' if places < windows else '')
+            status.update(f"{self.live_reference} · {place} · score {message['score']:.3f}"
+                          f" · {message['ms']:.0f} ms")
+        elif 'error' in message:
+            if self.localiser.ready:
+                status.update(f"{method}: {message['error']}")
+            else:
+                self.stop_localising(f"{method} failed: {message['error']} (logs/live-{method}.log)")
+
+    def stop_localising(self, message):
+        localiser, self.localiser = self.localiser, None
+        if localiser:
+            threading.Thread(target=localiser.close, daemon=True).start()
+        button = self.query_one('#live-localise', Button)
+        button.label, button.variant = 'Localise', 'default'
+        self.query_one('#live-progress', Static).update(message)
+
+    def on_unmount(self):
+        self.camera_stop.set()
+        if self.localiser:
+            self.localiser.close()
 
 
 def main():

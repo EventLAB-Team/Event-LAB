@@ -1,0 +1,17 @@
+dataset:
+  name: live
+  version: 1.0.0
+  description: References recorded live in the EventLAB TUI (no ground truth)
+  base_url: ''
+  camera: Prophesee EVK4 00050960
+  resolution:
+  - 1280
+  - 720
+sequences: {}
+format:
+  data:
+    format: hdf5
+    timestamp_val: us
+    time_scale: 1e-06
+  ground_truth: hdf5
+  hot_pixel: ''
